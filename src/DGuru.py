@@ -120,10 +120,10 @@ class Lexer:
                 num_str += self.current_char
             self.increment()
             
-            if period_count == 0:
-                return Token(TT_INT, int(num_str))
-            else:
-                return Token(TT_FLOAT, float(num_str))
+        if period_count == 0:
+            return Token(TT_INT, int(num_str))
+        else:
+            return Token(TT_FLOAT, float(num_str))
 
 ### RUN ###
 def run(fname, text):
