@@ -221,7 +221,10 @@ class Parser:
     def parser(self):
         res = self.expr()
         if not res.error and self.current_token.type != TT_EOF:
-            return res.failure()
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected '+', '-', '*' or '/'"
+            ))
         return res
 
     def factor(self):
