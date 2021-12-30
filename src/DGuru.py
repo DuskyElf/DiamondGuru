@@ -184,6 +184,14 @@ class BinOpNode:
     def __repr__(self):
         return f"({self.left_node}, {self.op_token}, {self.right_node})"
 
+class UniaryOpNode:
+    def __init__(self, op_token, node):
+        self.op_token = op_token
+        self.node = node
+    
+    def __repr__(self):
+        return f"({self.op_token}, {self.node})"
+
 ### PARSE RESULT
 class ParseResult:
     def __init__(self):
@@ -229,11 +237,30 @@ class Parser:
 
     def factor(self):
         res = ParseResult()
-        
         tok = self.current_token
-        if tok.type in (TT_INT, TT_FLOAT):
+        
+        if tok.type in (TT_PLUS, TT_MINUS):
+            res.register(self.increment())
+            factor = res.register(self.factor())
+            if res.error: return res
+            return res.success(UniaryOpNode(tok, factor))
+        
+        elif tok.type in (TT_INT, TT_FLOAT):
             res.register(self.increment())
             return res.success(NumberNode(tok))
+
+        elif tok.type == TT_LPAREN:
+            res.register(self.increment())
+            expr = res.register(self.expr())
+            if res.error: return res
+            if self.current_token.type == TT_RPAREN:
+                res.register(self.increment())
+                return res.success(expr)
+            else:
+                return res.failure(InvalidSyntaxError(
+                    self.current_token.pos_start, self.current_token.pos_end,
+                    "Expected ')'"
+                ))
         
         return res.failure(InvalidSyntaxError(
             tok.pos_start, tok.pos_end,
