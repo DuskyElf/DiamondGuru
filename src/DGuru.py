@@ -291,7 +291,7 @@ class Parser:
 def run(fname, text):
     lexer = Lexer(fname, text)
     tokens, error = lexer.make_tokens()
-    if error: return None, Error
+    if error: return None, error
     
     parser = Parser(tokens)
     abstractSyntaxTree = parser.parser()
