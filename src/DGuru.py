@@ -1,3 +1,5 @@
+import sys
+
 ### DIGITS ###
 DIGITS = '0123456789'
 
@@ -297,3 +299,19 @@ def run(fname, text):
     abstractSyntaxTree = parser.parser()
     
     return abstractSyntaxTree.node, abstractSyntaxTree.error
+
+def main():
+    file = sys.argv[1]
+
+    try:
+        with open(file) as f:
+            context = f.read()
+    except FileNotFoundError as exeption:
+        print(exeption)
+    
+    result, error = run(file, context)
+    if error: print(error.as_string())
+    else: print(result)
+
+if __name__ == "__main__":
+    main()
