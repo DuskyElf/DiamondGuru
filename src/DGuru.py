@@ -288,7 +288,7 @@ class Parser:
         res = ParseResult()
         left = res.register(func())
         if res.error: return res
-        
+
         while self.current_token.type in ops:
             op_token = self.current_token
             res.register(self.increment())
@@ -298,11 +298,11 @@ class Parser:
             
         return res.success(left)
 
-### Compiler ###
-
-
 ### Analizer ###
 class Analizer:
+    def __init__(self):
+        pass
+    
     def visit(self, node):
         method_name = f'visit_{type(node).__name__}'
         method = getattr(self, method_name, self.no_visit_node)
@@ -350,6 +350,7 @@ def main():
             context = f.read()
     except FileNotFoundError as exeption:
         print(exeption)
+        sys.exit()
     
     result, error = run(file, context)
     if error: print(error.as_string())
