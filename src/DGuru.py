@@ -173,6 +173,9 @@ class Lexer:
 class NumberNode:
     def __init__(self, token):
         self.token = token
+        
+        self.pos_start = self.token.pos_start
+        self.pos_end = self.token.pos_end
     
     def __repr__(self):
         return f"{self.token}"
@@ -182,14 +185,20 @@ class BinOpNode:
         self.left_node = left_node
         self.op_token = op_token
         self.right_node = right_node
+        
+        self.pos_start = self.left_node.pos_start
+        self.pos_end = self.right_node.pos_end
     
     def __repr__(self):
         return f"({self.left_node}, {self.op_token}, {self.right_node})"
 
-class UniaryOpNode:
+class UnaryOpNode:
     def __init__(self, op_token, node):
         self.op_token = op_token
         self.node = node
+        
+        self.pos_start = self.op_token.pos_start
+        self.pos_end = self.node.pos_end
     
     def __repr__(self):
         return f"({self.op_token}, {self.node})"
@@ -245,7 +254,7 @@ class Parser:
             res.register(self.increment())
             factor = res.register(self.factor())
             if res.error: return res
-            return res.success(UniaryOpNode(tok, factor))
+            return res.success(UnaryOpNode(tok, factor))
         
         elif tok.type in (TT_INT, TT_FLOAT):
             res.register(self.increment())
@@ -289,16 +298,49 @@ class Parser:
             
         return res.success(left)
 
+### Compiler ###
+
+
+### Analizer ###
+class Analizer:
+    def visit(self, node):
+        method_name = f'visit_{type(node).__name__}'
+        method = getattr(self, method_name, self.no_visit_node)
+        return method(node)
+    
+    def no_visit_node(self, node):
+        raise Exception(f'No visit_{type(node).__name__} method defined.')
+
+    
+    def visit_NumberNode(self, node):
+        print('found number node')
+    
+    def visit_BinOpNode(self, node):
+        print('found bin op node')
+        self.visit(node.left_node)
+        self.visit(node.right_node)
+    
+    def visit_UnaryOpNode(self, node):
+        print('found unary op node')
+        self.visit(node.node)
+
 ### RUN ###
 def run(fname, text):
+    # Lexing
     lexer = Lexer(fname, text)
     tokens, error = lexer.make_tokens()
     if error: return None, error
     
+    # Parsing
     parser = Parser(tokens)
     abstractSyntaxTree = parser.parser()
+    if abstractSyntaxTree.error: return None, abstractSyntaxTree.error
     
-    return abstractSyntaxTree.node, abstractSyntaxTree.error
+    # analizing
+    analizer = Analizer()
+    analizer.visit(abstractSyntaxTree.node)
+    
+    return None, None
 
 def main():
     file = sys.argv[1]
