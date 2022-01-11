@@ -169,7 +169,6 @@ class Lexer:
             return Token(TT_FLOAT, float(num_str), pos_start, self.pos)
 
 ### NODES ###
-
 class NumberNode:
     def __init__(self, token):
         self.token = token
@@ -178,7 +177,7 @@ class NumberNode:
         self.pos_end = self.token.pos_end
     
     def __repr__(self):
-        return f"{self.token}"
+        return f"{self.token.value}"
 
 class BinOpNode:
     def __init__(self, left_node, op_token, right_node):
@@ -300,9 +299,6 @@ class Parser:
 
 ### Analizer ###
 class Analizer:
-    def __init__(self):
-        pass
-    
     def visit(self, node):
         method_name = f'visit_{type(node).__name__}'
         method = getattr(self, method_name, self.no_visit_node)
@@ -313,16 +309,22 @@ class Analizer:
 
     
     def visit_NumberNode(self, node):
-        print('found number node')
+        print('Number node!', node.token.value)
     
     def visit_BinOpNode(self, node):
-        print('found bin op node')
+        print('Bin op node!', node.op_token.type)
         self.visit(node.left_node)
         self.visit(node.right_node)
     
     def visit_UnaryOpNode(self, node):
-        print('found unary op node')
+        print('Unary node!', node.op_token.type)
         self.visit(node.node)
+        
+    def op(self, token):
+        if token == TT_PLUS: return '+'
+        if token == TT_MINUS: return '-'
+        if token == TT_MUL: return '*'
+        if token == TT_DIV: return '/'
 
 ### RUN ###
 def run(fname, text):
