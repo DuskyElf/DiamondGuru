@@ -326,6 +326,18 @@ class Analizer:
         if token == TT_MUL: return '*'
         if token == TT_DIV: return '/'
 
+### Writer ###
+class Writer:
+    def __init__(self):
+        self.core_code = ''
+        self.libraries = []
+    
+    def c_based_finishing(self):
+        self.core_code = f"int main(){{\n{self.core_code}\nreturn 0;\n}}"
+        
+        for library in self.libraries:
+            self.core_code = f'{library}\n{self.core_code}'
+
 ### RUN ###
 def run(fname, text):
     # Lexing
