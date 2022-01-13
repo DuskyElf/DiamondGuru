@@ -313,17 +313,18 @@ class Parser:
         while self.current_token.type != TT_EOF:
             statements.append(res.register(self.statement()))
             if res.error: return res
-            if self.current_token.type == TT_EOF:
-                break
-            if self.current_token.type == TT_NEWLINE:
+            temp = False
+            while self.current_token.type == TT_NEWLINE:
                 res.register(self.increment())
-            else:
-                return res.failure(InvalidSyntaxError(
-                    self.current_token.pos_start, self.current_token.pos_end,
-                    "Expected '\\n' or ';'"
-                ))
-        
-        return res.success(CodeNode(statements))
+                temp = True
+            if not temp:
+                if self.current_token.type == TT_EOF:
+                    return res.success(CodeNode(statements))
+                else:
+                    return res.failure(InvalidSyntaxError(
+                        self.current_token.pos_start, self.current_token.pos_end,
+                        "Expected '\\n' or ';'"
+                    ))
     
     #######################################################
     
