@@ -418,18 +418,24 @@ def run(fname, text):
     return c_code, None
 
 def main():
-    file = sys.argv[1]
+    if len(sys.argv) < 2:
+        print("Please pass the file (that you want to compile's) path :)")
+        sys.exit()
+    
+    file_name = sys.argv[1]
 
     try:
-        with open(file) as f:
+        with open(file_name, 'r') as f:
             context = f.read()
     except FileNotFoundError as exeption:
         print(exeption)
         sys.exit()
     
-    result, error = run(file, context)
+    result, error = run(file_name, context)
     if error: print(error.as_string())
-    else: print(result)
+    else:
+        with open(file_name.split('.')[0]+'.c', 'w') as f:
+            f.write(result)
 
 if __name__ == "__main__":
     main()
