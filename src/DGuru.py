@@ -325,6 +325,10 @@ class Parser:
                         self.current_token.pos_start, self.current_token.pos_end,
                         "Expected '\\n' or ';'"
                     ))
+        return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected statement, empty files are not compilable"
+            ))
     
     #######################################################
     
