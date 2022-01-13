@@ -1,4 +1,5 @@
 import sys
+import subprocess
 
 ### DIGITS ###
 DIGITS = '0123456789'
@@ -434,8 +435,14 @@ def main():
     result, error = run(file_name, context)
     if error: print(error.as_string())
     else:
-        with open(file_name.split('.')[0]+'.c', 'w') as f:
+        xfile = file_name.split('.')[0]
+        with open(xfile+'.c', 'w') as f:
             f.write(result)
+        
+        try:
+            subprocess.Popen(f"gcc {xfile+'.c'} -o {xfile+'.exe'}")
+        except FileNotFoundError:
+            print("gcc is not installed, you need gcc compiler to use this program ;(")
 
 if __name__ == "__main__":
     main()
