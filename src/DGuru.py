@@ -352,17 +352,17 @@ class Writer:
         self.core_code = ''
         self.libraries = {}
     
-    def c_based_finishing(self):
+    def write_code(self, code):
+        self.core_code += code + ';\n'
+    
+    def result(self):
         self.core_code = f"int main(){{\n{self.core_code}\nreturn 0;\n}}"
         for library in self.libraries:
             self.core_code += f'{library}\n{self.core_code}'
         return self.core_code
 
 ### Analizer ###
-class Analizer:
-    def __init__(self):
-        self.writer = Writer()
-    
+class Analizer:    
     def visit(self, node):
         method_name = f'visit_{type(node).__name__}'
         method = getattr(self, method_name, self.no_visit_node)
@@ -370,26 +370,34 @@ class Analizer:
     
     def no_visit_node(self, node):
         raise Exception(f'No visit_{type(node).__name__} method defined.')
-
-    def visit_CodeNode(self, node):
-        pass
     
     def visit_NumberNode(self, node):
-        print('Number node!', node.token.value)
+        return node.token.value
     
     def visit_BinOpNode(self, node):
-        if node.op_token == '+':
+        if node.op_token.type == TT_PLUS:
             return f'({self.visit(node.left_node)}+{self.visit(node.right_node)})'
-        elif node.op_token == '-':
+        if node.op_token.type == TT_MINUS:
             return f'({self.visit(node.left_node)}-{self.visit(node.right_node)})'
-        elif node.op_token == '*':
+        if node.op_token.type == TT_MUL:
             return f'({self.visit(node.left_node)}*{self.visit(node.right_node)})'
-        elif node.op_token == '/':
+        if node.op_token.type == TT_DIV:
             return f'({self.visit(node.left_node)}/{self.visit(node.right_node)})'
     
     def visit_UnaryOpNode(self, node):
-        print('Unary node!', node.op_token.type)
-        self.visit(node.node)
+        if node.op_token.type == TT_PLUS:
+            return f'(+{self.visit(node.node)})'
+        if node.op_token.type == TT_MINUS:
+            return f'(-{self.visit(node.node)})'
+    
+    def visit_StatementNode(self, node):
+        return self.visit(node.statement_node)
+    
+    def visit_CodeNode(self, node):
+        writer = Writer()
+        for statement in node.statements:
+            writer.write_code(self.visit(statement))
+        return writer.result()
 
 ### RUN ###
 def run(fname, text):
@@ -401,15 +409,13 @@ def run(fname, text):
     # Parsing
     parser = Parser(tokens)
     abstractSyntaxTree = parser.parser()
-    return abstractSyntaxTree.node, abstractSyntaxTree.error
-    
     if abstractSyntaxTree.error: return None, abstractSyntaxTree.error
     
     # analizing
     analizer = Analizer()
-    analizer.visit(abstractSyntaxTree.node)
+    c_code = analizer.visit(abstractSyntaxTree.node)
     
-    return None, None
+    return c_code, None
 
 def main():
     file = sys.argv[1]

@@ -1,9 +1,11 @@
-code: statement (NEWLINE statement)* EOF
+code        : statement (NEWLINE statement)* EOF
 
-    statement: expr
+statement   : expr
 
-    expr: term ((PLUS|MINUS) term)*
-        term: factor ((MUL|DIV) factor)*
-        factor: INT|FLOAT
-              : (PLUS|MINUS) factor
-              : LPAREN expr RPAREN
+expr        : term ((PLUS|MINUS) term)*
+
+term        : factor ((MUL|DIV) factor)*
+
+factor      : INT|FLOAT
+            : (PLUS|MINUS) factor
+            : LPAREN expr RPAREN
