@@ -82,6 +82,7 @@ TT_MUL      = 'MUL'
 TT_DIV      = 'DIV'
 TT_LPAREN   = 'LPAREN'
 TT_RPAREN   = 'RPAREN'
+TT_NEWLINE  = 'NEWLINE'
 TT_EOF      = 'EOF'
 
 class Token:
@@ -119,6 +120,9 @@ class Lexer:
         
         while self.current_char != None:
             if self.current_char in ' \t':
+                self.increment()
+            elif self.current_char in ';\n':
+                tokens.append(Token(TT_NEWLINE, pos_start=self.pos))
                 self.increment()
             elif self.current_char in DIGITS:
                 tokens.append(self.define_number())
@@ -202,6 +206,20 @@ class UnaryOpNode:
     def __repr__(self):
         return f"({self.op_token}, {self.node})"
 
+class StatementNode:
+    def __init__(self, statement_node):
+        self.statement_node = statement_node
+    
+    def __repr__(self):
+        return f'{self.statement_node}'
+
+class CodeNode:
+    def __init__(self, statements):
+        self.statements = statements
+    
+    def __repr__(self):
+        return f'{self.statements}'
+
 ### PARSE RESULT
 class ParseResult:
     def __init__(self):
@@ -237,7 +255,7 @@ class Parser:
         return self.current_token
     
     def parser(self):
-        res = self.expr()
+        res = self.code()
         if not res.error and self.current_token.type != TT_EOF:
             return res.failure(InvalidSyntaxError(
                 self.current_token.pos_start, self.current_token.pos_end,
@@ -283,6 +301,32 @@ class Parser:
     def expr(self):
         return self.bin_op(self.term, (TT_PLUS, TT_MINUS))
     
+    def statement(self):
+        res = ParseResult()
+        statement = res.register(self.expr())
+        if res.error: return res
+        return res.success(StatementNode(statement))
+    
+    def code(self):
+        res = ParseResult()
+        statements = []
+        while self.current_token.type != TT_EOF:
+            statements.append(res.register(self.statement()))
+            if res.error: return res
+            if self.current_token.type == TT_EOF:
+                break
+            if self.current_token.type == TT_NEWLINE:
+                res.register(self.increment())
+            else:
+                return res.failure(InvalidSyntaxError(
+                    self.current_token.pos_start, self.current_token.pos_end,
+                    "Expected '\\n' or ';'"
+                ))
+        
+        return res.success(CodeNode(statements))
+    
+    #######################################################
+    
     def bin_op(self, func, ops):
         res = ParseResult()
         left = res.register(func())
@@ -297,8 +341,23 @@ class Parser:
             
         return res.success(left)
 
+### Writer ###
+class Writer:
+    def __init__(self):
+        self.core_code = ''
+        self.libraries = {}
+    
+    def c_based_finishing(self):
+        self.core_code = f"int main(){{\n{self.core_code}\nreturn 0;\n}}"
+        for library in self.libraries:
+            self.core_code += f'{library}\n{self.core_code}'
+        return self.core_code
+
 ### Analizer ###
 class Analizer:
+    def __init__(self):
+        self.writer = Writer()
+    
     def visit(self, node):
         method_name = f'visit_{type(node).__name__}'
         method = getattr(self, method_name, self.no_visit_node)
@@ -307,36 +366,25 @@ class Analizer:
     def no_visit_node(self, node):
         raise Exception(f'No visit_{type(node).__name__} method defined.')
 
+    def visit_CodeNode(self, node):
+        pass
     
     def visit_NumberNode(self, node):
         print('Number node!', node.token.value)
     
     def visit_BinOpNode(self, node):
-        print('Bin op node!', node.op_token.type)
-        self.visit(node.left_node)
-        self.visit(node.right_node)
+        if node.op_token == '+':
+            return f'({self.visit(node.left_node)}+{self.visit(node.right_node)})'
+        elif node.op_token == '-':
+            return f'({self.visit(node.left_node)}-{self.visit(node.right_node)})'
+        elif node.op_token == '*':
+            return f'({self.visit(node.left_node)}*{self.visit(node.right_node)})'
+        elif node.op_token == '/':
+            return f'({self.visit(node.left_node)}/{self.visit(node.right_node)})'
     
     def visit_UnaryOpNode(self, node):
         print('Unary node!', node.op_token.type)
         self.visit(node.node)
-        
-    def op(self, token):
-        if token == TT_PLUS: return '+'
-        if token == TT_MINUS: return '-'
-        if token == TT_MUL: return '*'
-        if token == TT_DIV: return '/'
-
-### Writer ###
-class Writer:
-    def __init__(self):
-        self.core_code = ''
-        self.libraries = []
-    
-    def c_based_finishing(self):
-        self.core_code = f"int main(){{\n{self.core_code}\nreturn 0;\n}}"
-        
-        for library in self.libraries:
-            self.core_code = f'{library}\n{self.core_code}'
 
 ### RUN ###
 def run(fname, text):
@@ -348,6 +396,8 @@ def run(fname, text):
     # Parsing
     parser = Parser(tokens)
     abstractSyntaxTree = parser.parser()
+    return abstractSyntaxTree.node, abstractSyntaxTree.error
+    
     if abstractSyntaxTree.error: return None, abstractSyntaxTree.error
     
     # analizing
