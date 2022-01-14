@@ -1,3 +1,4 @@
+from fileinput import filename
 import sys
 import subprocess
 
@@ -401,48 +402,99 @@ class Analizer:
         return writer.result()
 
 ### RUN ###
-def run(fname, text):
+def lex(file_name, context):
     # Lexing
-    lexer = Lexer(fname, text)
-    tokens, error = lexer.make_tokens()
-    if error: return None, error
-    
+    lexer = Lexer(file_name, context)
+    return lexer.make_tokens()
+
+def parse(tokens):
     # Parsing
     parser = Parser(tokens)
-    abstractSyntaxTree = parser.parser()
-    if abstractSyntaxTree.error: return None, abstractSyntaxTree.error
-    
+    return parser.parser()
+
+def analize(abstractSyntaxTree):
     # analizing
     analizer = Analizer()
-    c_code = analizer.visit(abstractSyntaxTree.node)
-    
-    return c_code, None
+    return analizer.visit(abstractSyntaxTree.node)
 
-def main():
-    if len(sys.argv) < 2:
-        print("Please pass the file (that you want to compile's) path :)")
-        sys.exit()
+def run(file_name, context):
+    tokens, error = lex(file_name, context)
+    if error: return None, error
     
-    file_name = sys.argv[1]
+    ast = parse(tokens)
+    if ast.error: return None, ast.error
+    
+    return analize(ast), None
 
+def open_code(file_name):
     try:
         with open(file_name, 'r') as f:
             context = f.read()
+            return context
     except FileNotFoundError as exeption:
         print(exeption)
         sys.exit()
+
+def main():
+    if len(sys.argv) < 2:
+        print("""Please provide any arguments:
+    compile <file_name>
+    c <file_name>
+    lex <file_name>
+    parse <file_name>
+    """)
+        sys.exit()
     
-    result, error = run(file_name, context)
-    if error: print(error.as_string())
+    if len(sys.argv) < 3:
+        print("Please also provide the file path of the script :)")
+        sys.exit()
+    
+    cmd = sys.argv[1].lower()
+    file_name = sys.argv[2]
+    context = open_code(file_name)
+    
+    if cmd == 'compile':
+        result, error = run(file_name, context)
+        if error: print(error.as_string())
+        else:
+            xfile = file_name.split('.')[0]
+            with open(xfile+'.c', 'w') as f:
+                f.write(result)
+            try:
+                subprocess.Popen(f"gcc {xfile+'.c'} -o {xfile+'.exe'}")
+            except FileNotFoundError:
+                print("gcc is not installed, you need gcc compiler to use this program ;(")
+    
+    elif cmd == 'c':
+        result, error = run(file_name, context)
+        if error: print(error.as_string())
+        else:
+            print(result)
+    
+    elif cmd == 'lex':
+        result, error = lex(file_name, context)
+        if error: print(error.as_string())
+        else:
+            print(result)
+    
+    elif cmd == 'parse':
+        tokens, error = lex(file_name, context)
+        if error: print(error.as_string())
+        else:
+            ast = parse(tokens)
+            if ast.error: print(ast.error.as_string())
+            else:
+                print(ast.node)
+    
     else:
-        xfile = file_name.split('.')[0]
-        with open(xfile+'.c', 'w') as f:
-            f.write(result)
-        
-        try:
-            subprocess.Popen(f"gcc {xfile+'.c'} -o {xfile+'.exe'}")
-        except FileNotFoundError:
-            print("gcc is not installed, you need gcc compiler to use this program ;(")
+        print(f"""Invalid argument {cmd} :(
+Please provide one of the valid arguments:
+    compile <file_name>
+    c <file_name>
+    lex <file_name>
+    parse <file_name>
+    """)
+        sys.exit()
 
 if __name__ == "__main__":
     main()
