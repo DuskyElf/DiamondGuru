@@ -82,6 +82,7 @@ TT_PLUS     = 'PLUS'
 TT_MINUS    = 'MINUS'
 TT_MUL      = 'MUL'
 TT_DIV      = 'DIV'
+TT_POW      = 'POW'
 TT_LPAREN   = 'LPAREN'
 TT_RPAREN   = 'RPAREN'
 TT_NEWLINE  = 'NEWLINE'
@@ -139,6 +140,9 @@ class Lexer:
                 self.increment()
             elif self.current_char == '/':
                 tokens.append(Token(TT_DIV, pos_start=self.pos))
+                self.increment()
+            elif self.current_char == '^':
+                tokens.append(Token(TT_POW, pos_start=self.pos))
                 self.increment()
             elif self.current_char == '(':
                 tokens.append(Token(TT_LPAREN, pos_start=self.pos))
@@ -265,17 +269,11 @@ class Parser:
             ))
         return res
 
-    def factor(self):
+    def atom(self):
         res = ParseResult()
         tok = self.current_token
         
-        if tok.type in (TT_PLUS, TT_MINUS):
-            res.register(self.increment())
-            factor = res.register(self.factor())
-            if res.error: return res
-            return res.success(UnaryOpNode(tok, factor))
-        
-        elif tok.type in (TT_INT, TT_FLOAT):
+        if tok.type in (TT_INT, TT_FLOAT):
             res.register(self.increment())
             return res.success(NumberNode(tok))
 
@@ -293,9 +291,24 @@ class Parser:
                 ))
         
         return res.failure(InvalidSyntaxError(
-            tok.pos_start, tok.pos_end,
-            "Expected int or float"
-        ))
+                    self.current_token.pos_start, self.current_token.pos_end,
+                    "Expected int, float, '+', '-' or '('"
+                ))
+
+    def power(self):
+        return self.bin_op(self.atom, (TT_POW,), self.factor)
+
+    def factor(self):
+        res = ParseResult()
+        tok = self.current_token
+        
+        if tok.type in (TT_PLUS, TT_MINUS):
+            res.register(self.increment())
+            factor = res.register(self.factor())
+            if res.error: return res
+            return res.success(UnaryOpNode(tok, factor))
+        
+        return self.power()
     
     def term(self):
         return self.bin_op(self.factor, (TT_MUL, TT_DIV))
@@ -334,15 +347,16 @@ class Parser:
     
     #######################################################
     
-    def bin_op(self, func, ops):
+    def bin_op(self, func_a, ops, func_b=None):
+        if func_b is None: func_b = func_a
         res = ParseResult()
-        left = res.register(func())
+        left = res.register(func_a())
         if res.error: return res
 
         while self.current_token.type in ops:
             op_token = self.current_token
             res.register(self.increment())
-            right = res.register(func())
+            right = res.register(func_b())
             if res.error: return res
             left = BinOpNode(left, op_token, right)
             
@@ -352,7 +366,7 @@ class Parser:
 class Writer:
     def __init__(self):
         self.core_code = ''
-        self.libraries = {}
+        self.libraries = set()
     
     def write_code(self, code):
         self.core_code += code + ';\n'
@@ -360,7 +374,7 @@ class Writer:
     def result(self):
         self.core_code = f"int main(){{\n{self.core_code}\nreturn 0;\n}}"
         for library in self.libraries:
-            self.core_code += f'{library}\n{self.core_code}'
+            self.core_code = f'{library}\n{self.core_code}'
         return self.core_code
 
 ### Analizer ###
@@ -385,6 +399,9 @@ class Analizer:
             return f'({self.visit(node.left_node)}*{self.visit(node.right_node)})'
         if node.op_token.type == TT_DIV:
             return f'({self.visit(node.left_node)}/{self.visit(node.right_node)})'
+        if node.op_token.type == TT_POW:
+            self.writer.libraries.add("#include<math.h>")
+            return f'(pow({self.visit(node.left_node)}, {self.visit(node.right_node)}))'
     
     def visit_UnaryOpNode(self, node):
         if node.op_token.type == TT_PLUS:
@@ -396,10 +413,10 @@ class Analizer:
         return self.visit(node.statement_node)
     
     def visit_CodeNode(self, node):
-        writer = Writer()
+        self.writer = Writer()
         for statement in node.statements:
-            writer.write_code(self.visit(statement))
-        return writer.result()
+            self.writer.write_code(self.visit(statement))
+        return self.writer.result()
 
 ### RUN ###
 def lex(file_name, context):
