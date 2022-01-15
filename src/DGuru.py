@@ -52,7 +52,11 @@ class IllegalCharError(Error):
 
 class InvalidSyntaxError(Error):
     def __init__(self, pos_start, pos_end, details):
-        super().__init__(pos_start, pos_end, 'Invalid Syntax', details)
+        super().__init__(pos_start, pos_end, 'InvalidSyntaxError', details)
+
+class NameError_(Error):
+    def __init__(self, pos_start, pos_end, details):
+        super().__init__(pos_start, pos_end, 'NameError', details)
 
 ### POSITION ###
 class Position:
@@ -393,6 +397,9 @@ class Parser:
     def code(self):
         res = ParseResult()
         statements = []
+        while self.current_token.type == TT_NEWLINE:
+            res.register(self.increment())
+            temp = True
         while self.current_token.type != TT_EOF:
             statements.append(res.register(self.statement()))
             if res.error: return res
@@ -430,6 +437,24 @@ class Parser:
             
         return res.success(left)
 
+### AnalizeResult ###
+class AnalizeResult:
+    def __init__(self):
+        self.value = None
+        self.error = None
+    
+    def register(self, res):
+        if res.error: self.error = res.error
+        return res.value
+    
+    def success(self, value):
+        self.value = value
+        return self
+    
+    def failure(self, error):
+        self.error = error
+        return self
+
 ### Writer ###
 class Writer:
     def __init__(self):
@@ -458,75 +483,98 @@ class Analizer:
         raise Exception(f'No visit_{type(node).__name__} method defined.')
     
     def visit_NumberNode(self, node):
-        return node.token.value, type(node.token.value)
+        return AnalizeResult().success((node.token.value, type(node.token.value)))
     
     def visit_IdentifierNode(self, node):
+        res = AnalizeResult()
         def map_type(type_):
             if type_ == 'int': return int
             if type_ == 'double': return float
         
-        if node.id_name_token.value not in self.writer.identifiers.keys(): return
+        if node.id_name_token.value not in self.writer.identifiers.keys():
+            return res.failure(
+                NameError_(
+                    node.pos_start, node.pos_end,
+                    f"Name '{node.id_name_token.value}' is not defined"
+                )
+            )
+        
         d = self.writer.identifiers[node.id_name_token.value]
-        return f"(*({d[1]}*)identifiers[{d[0]}])", map_type(d[1])
+        return res.success((f"(*({d[1]}*)identifiers[{d[0]}])", map_type(d[1])))
     
     def visit_IdAssignNode(self, node):
         def map_type(type_):
             if type_ is int: return 'int'
             if type_ is float: return 'double'
         
-        value_node = self.visit(node.value_node)
+        res = AnalizeResult()
+        value_node = res.register(self.visit(node.value_node))
+        if res.error: return res
+        
         name = node.id_name_token.value
         id_list = self.writer.identifiers
         
         if name in id_list.keys():
             if map_type(value_node[1]) == id_list[name][1]:
-                return f"*({id_list[name][1]}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]
+                return res.success((f"*({id_list[name][1]}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]))
             
             self.writer.write_code(f"identifiers[{id_list[name][0]}] = realloc(identifiers[{id_list[name][0]}], sizeof({map_type(value_node[1])}))")
             id_list[name][1] = map_type(value_node[1])
-            return f"*({map_type(value_node[1])}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]
+            return res.success((f"*({map_type(value_node[1])}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]))
 
         id_list[name] = [-1, map_type(value_node[1])]
         id_list[name][0] = list(id_list.keys()).index(name)
         self.writer.write_code(f"identifiers[{id_list[name][0]}] = calloc(1, sizeof({map_type(value_node[1])}))")
-        return f"*({map_type(value_node[1])}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]
+        return res.success((f"*({map_type(value_node[1])}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]))
     
     def visit_BinOpNode(self, node):
-        left_node = self.visit(node.left_node)
-        right_node = self.visit(node.right_node)
+        res = AnalizeResult()
+        left_node = res.register(self.visit(node.left_node))
+        if res.error: return res
+        right_node = res.register(self.visit(node.right_node))
+        if res.error: return res
 
         if left_node[1] is float or right_node[1] is float:
             eval_type = float
         else: eval_type = int
         
         if node.op_token.type == TT_PLUS:
-            return f'({left_node[0]}+{right_node[0]})', eval_type
+            return res.success((f'({left_node[0]}+{right_node[0]})', eval_type))
         if node.op_token.type == TT_MINUS:
-            return f'({left_node[0]}-{right_node[0]})', eval_type
+            return res.success((f'({left_node[0]}-{right_node[0]})', eval_type))
         if node.op_token.type == TT_MUL:
-            return f'({left_node[0]}*{right_node[0]})', eval_type
+            return res.success((f'({left_node[0]}*{right_node[0]})', eval_type))
         if node.op_token.type == TT_DIV:
-            return f'({left_node[0]}/(double){right_node[0]})', float
+            return res.success((f'({left_node[0]}/(double){right_node[0]})', float))
         if node.op_token.type == TT_POW:
             self.writer.libraries.add("#include<math.h>")
-            return f'(pow((double){self.visit(node.left_node)}, (double){self.visit(node.right_node)}))', float
+            return res.success((f'(pow({self.visit(node.left_node)}, {self.visit(node.right_node)}))', eval_type))
     
     def visit_UnaryOpNode(self, node):
-        value_node = self.visit(node.node)
+        res = AnalizeResult()
+        value_node = res.register(self.visit(node.node))
+        if res.error: return res
+        
         if node.op_token.type == TT_PLUS:
-            return f'(+{value_node[0]})', value_node[1]
+            return res.success((f'(+{value_node[0]})', value_node[1]))
         if node.op_token.type == TT_MINUS:
-            return f'(-{value_node[0]})', value_node[1]
+            return res.success((f'(-{value_node[0]})', value_node[1]))
     
     def visit_StatementNode(self, node):
-        statement_node = self.visit(node.statement_node)
-        return statement_node[0], statement_node[1]
+        res = AnalizeResult()
+        statement_node = res.register(self.visit(node.statement_node))
+        if res.error: return res
+        return res.success((statement_node[0], statement_node[1]))
     
     def visit_CodeNode(self, node):
+        res = AnalizeResult()
         self.writer = Writer()
+        
         for statement in node.statements:
-            self.writer.write_code(self.visit(statement)[0])
-        return self.writer.result()
+            statement_node = res.register(self.visit(statement))
+            if res.error: return res
+            self.writer.write_code(statement_node[0])
+        return res.success(self.writer.result())
 
 ### RUN ###
 def lex(file_name, context):
@@ -551,7 +599,9 @@ def run(file_name, context):
     ast = parse(tokens)
     if ast.error: return None, ast.error
     
-    return analize(ast), None
+    c = analize(ast)
+    if c.error: return None, c.error
+    return c.value, None
 
 def open_code(file_name):
     try:

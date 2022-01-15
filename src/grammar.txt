@@ -1,4 +1,4 @@
-code        : statement (NEWLINE statement)* EOF
+code        : (NEWLINE)* statement (NEWLINE statement)* EOF
 
 statement   : expr | identifier
 
