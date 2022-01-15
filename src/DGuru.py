@@ -1,9 +1,11 @@
-from fileinput import filename
 import sys
 import subprocess
+import string
 
-### DIGITS ###
+### CONSTANTS ###
 DIGITS = '0123456789'
+LETTERS = string.ascii_letters
+LETTERS_DIGITS =  LETTERS + DIGITS
 
 ### Super String ###
 def super_string(text, pos_start, pos_end):
@@ -76,17 +78,22 @@ class Position:
 
 ### TOKENS ###
 
-TT_INT      = 'INT'
-TT_FLOAT    = 'FLOAT'
-TT_PLUS     = 'PLUS'
-TT_MINUS    = 'MINUS'
-TT_MUL      = 'MUL'
-TT_DIV      = 'DIV'
-TT_POW      = 'POW'
-TT_LPAREN   = 'LPAREN'
-TT_RPAREN   = 'RPAREN'
-TT_NEWLINE  = 'NEWLINE'
-TT_EOF      = 'EOF'
+TT_INT          = 'INT'
+TT_FLOAT        = 'FLOAT'
+TT_IDENTIFIER   = 'IDENTIFIER'
+TT_KEYWORD      = 'KEYWORD'
+TT_PLUS         = 'PLUS'
+TT_MINUS        = 'MINUS'
+TT_MUL          = 'MUL'
+TT_DIV          = 'DIV'
+TT_POW          = 'POW'
+TT_EQ           = 'EQ'
+TT_LPAREN       = 'LPAREN'
+TT_RPAREN       = 'RPAREN'
+TT_NEWLINE      = 'NEWLINE'
+TT_EOF          = 'EOF'
+
+KEYWORDS = []
 
 class Token:
     def __init__(self, type_, value=None, pos_start=None, pos_end=None):
@@ -129,6 +136,8 @@ class Lexer:
                 self.increment()
             elif self.current_char in DIGITS:
                 tokens.append(self.define_number())
+            elif self.current_char in LETTERS:
+                tokens.append(self.make_identifier())
             elif self.current_char == '+':
                 tokens.append(Token(TT_PLUS, pos_start=self.pos))
                 self.increment()
@@ -143,6 +152,9 @@ class Lexer:
                 self.increment()
             elif self.current_char == '^':
                 tokens.append(Token(TT_POW, pos_start=self.pos))
+                self.increment()
+            elif self.current_char == '=':
+                tokens.append(Token(TT_EQ, pos_start=self.pos))
                 self.increment()
             elif self.current_char == '(':
                 tokens.append(Token(TT_LPAREN, pos_start=self.pos))
@@ -177,6 +189,17 @@ class Lexer:
             return Token(TT_INT, int(num_str), pos_start, self.pos)
         else:
             return Token(TT_FLOAT, float(num_str), pos_start, self.pos)
+    
+    def make_identifier(self):
+        id_str = ''
+        pos_start = self.pos.copy()
+        
+        while self.current_char != None and self.current_char in LETTERS_DIGITS + '_':
+            id_str += self.current_char
+            self.increment()
+        
+        tok_type = TT_KEYWORD if id_str in KEYWORDS else TT_IDENTIFIER
+        return Token(tok_type, id_str, pos_start, self.pos)
 
 ### NODES ###
 class NumberNode:
@@ -188,6 +211,27 @@ class NumberNode:
     
     def __repr__(self):
         return f"{self.token.value}"
+
+class IdentifierNode:
+    def __init__(self, id_name_token):
+        self.id_name_token = id_name_token
+        
+        self.pos_start = self.id_name_token.pos_start
+        self.pos_end = self.id_name_token.pos_end
+    
+    def __repr__(self):
+        return f"{self.id_name_token.value}"
+
+class IdAssignNode:
+    def __init__(self, id_name_token, value_node):
+        self.id_name_token = id_name_token
+        self.value_node = value_node
+        
+        self.pos_start = self.id_name_token.pos_start
+        self.pos_end = self.value_node.pos_end
+    
+    def __repr__(self):
+        return f"IdentifierAssign({self.id_name_token.value}, {self.value_node})"
 
 class BinOpNode:
     def __init__(self, left_node, op_token, right_node):
@@ -276,6 +320,10 @@ class Parser:
         if tok.type in (TT_INT, TT_FLOAT):
             res.register(self.increment())
             return res.success(NumberNode(tok))
+        
+        elif tok.type == TT_IDENTIFIER:
+            res.register(self.increment())
+            return res.success(IdentifierNode(tok))
 
         elif tok.type == TT_LPAREN:
             res.register(self.increment())
@@ -316,9 +364,29 @@ class Parser:
     def expr(self):
         return self.bin_op(self.term, (TT_PLUS, TT_MINUS))
     
+    def identifier(self):
+        res = ParseResult()
+        identifier_name = self.current_token
+        res.register(self.increment())
+        
+        if self.current_token.type != TT_EQ:
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected '='"
+            )) # This error might never occur
+        
+        res.register(self.increment())
+        expr = res.register(self.expr())
+        if res.error: return res
+        return res.success(IdAssignNode(identifier_name, expr))
+    
     def statement(self):
         res = ParseResult()
-        statement = res.register(self.expr())
+        if self.current_token.type == TT_IDENTIFIER and self.tokens[self.token_index + 1].type == TT_EQ:
+            statement = res.register(self.identifier())
+        else:
+            statement = res.register(self.expr())
+        
         if res.error: return res
         return res.success(StatementNode(statement))
     
@@ -366,13 +434,15 @@ class Parser:
 class Writer:
     def __init__(self):
         self.core_code = ''
-        self.libraries = set()
+        self.libraries = {"#include<stdlib.h>"}
+        self.identifiers = {}
     
     def write_code(self, code):
         self.core_code += code + ';\n'
     
     def result(self):
         self.core_code = f"int main(){{\n{self.core_code}\nreturn 0;\n}}"
+        self.core_code = f"void* identifiers[{len(self.identifiers)}];\n{self.core_code}"
         for library in self.libraries:
             self.core_code = f'{library}\n{self.core_code}'
         return self.core_code
@@ -388,34 +458,74 @@ class Analizer:
         raise Exception(f'No visit_{type(node).__name__} method defined.')
     
     def visit_NumberNode(self, node):
-        return node.token.value
+        return node.token.value, type(node.token.value)
+    
+    def visit_IdentifierNode(self, node):
+        def map_type(type_):
+            if type_ == 'int': return int
+            if type_ == 'double': return float
+        
+        if node.id_name_token.value not in self.writer.identifiers.keys(): return
+        d = self.writer.identifiers[node.id_name_token.value]
+        return f"(*({d[1]}*)identifiers[{d[0]}])", map_type(d[1])
+    
+    def visit_IdAssignNode(self, node):
+        def map_type(type_):
+            if type_ is int: return 'int'
+            if type_ is float: return 'double'
+        
+        value_node = self.visit(node.value_node)
+        name = node.id_name_token.value
+        id_list = self.writer.identifiers
+        
+        if name in id_list.keys():
+            if map_type(value_node[1]) == id_list[name][1]:
+                return f"*({id_list[name][1]}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]
+            
+            self.writer.write_code(f"identifiers[{id_list[name][0]}] = realloc(identifiers[{id_list[name][0]}], sizeof({map_type(value_node[1])}))")
+            id_list[name][1] = map_type(value_node[1])
+            return f"*({map_type(value_node[1])}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]
+
+        id_list[name] = [-1, map_type(value_node[1])]
+        id_list[name][0] = list(id_list.keys()).index(name)
+        self.writer.write_code(f"identifiers[{id_list[name][0]}] = calloc(1, sizeof({map_type(value_node[1])}))")
+        return f"*({map_type(value_node[1])}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]
     
     def visit_BinOpNode(self, node):
+        left_node = self.visit(node.left_node)
+        right_node = self.visit(node.right_node)
+
+        if left_node[1] is float or right_node[1] is float:
+            eval_type = float
+        else: eval_type = int
+        
         if node.op_token.type == TT_PLUS:
-            return f'({self.visit(node.left_node)}+{self.visit(node.right_node)})'
+            return f'({left_node[0]}+{right_node[0]})', eval_type
         if node.op_token.type == TT_MINUS:
-            return f'({self.visit(node.left_node)}-{self.visit(node.right_node)})'
+            return f'({left_node[0]}-{right_node[0]})', eval_type
         if node.op_token.type == TT_MUL:
-            return f'({self.visit(node.left_node)}*{self.visit(node.right_node)})'
+            return f'({left_node[0]}*{right_node[0]})', eval_type
         if node.op_token.type == TT_DIV:
-            return f'({self.visit(node.left_node)}/{self.visit(node.right_node)})'
+            return f'({left_node[0]}/(double){right_node[0]})', float
         if node.op_token.type == TT_POW:
             self.writer.libraries.add("#include<math.h>")
-            return f'(pow({self.visit(node.left_node)}, {self.visit(node.right_node)}))'
+            return f'(pow((double){self.visit(node.left_node)}, (double){self.visit(node.right_node)}))', float
     
     def visit_UnaryOpNode(self, node):
+        value_node = self.visit(node.node)
         if node.op_token.type == TT_PLUS:
-            return f'(+{self.visit(node.node)})'
+            return f'(+{value_node[0]})', value_node[1]
         if node.op_token.type == TT_MINUS:
-            return f'(-{self.visit(node.node)})'
+            return f'(-{value_node[0]})', value_node[1]
     
     def visit_StatementNode(self, node):
-        return self.visit(node.statement_node)
+        statement_node = self.visit(node.statement_node)
+        return statement_node[0], statement_node[1]
     
     def visit_CodeNode(self, node):
         self.writer = Writer()
         for statement in node.statements:
-            self.writer.write_code(self.visit(statement))
+            self.writer.write_code(self.visit(statement)[0])
         return self.writer.result()
 
 ### RUN ###

@@ -1,6 +1,8 @@
 code        : statement (NEWLINE statement)* EOF
 
-statement   : expr
+statement   : expr | identifier
+
+identifier  : IDENTIFIER EQ expr
 
 expr        : term ((PLUS|MINUS) term)*
 
@@ -10,5 +12,5 @@ factor      : (PLUS|MINUS) power
 
 power       : atom (POW factor)*
 
-atom        : INT|FLOAT
+atom        : INT|FLOAT|IDENTIFIER
             : LPAREN expr RPAREN
