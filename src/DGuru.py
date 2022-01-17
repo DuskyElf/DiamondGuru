@@ -58,6 +58,10 @@ class NameError_(Error):
     def __init__(self, pos_start, pos_end, details):
         super().__init__(pos_start, pos_end, 'NameError', details)
 
+class TypeError_(Error):
+    def __init__(self, pos_start, pos_end, details):
+        super().__init__(pos_start, pos_end, 'TypeError', details)
+
 ### POSITION ###
 class Position:
     def __init__(self, index, linumber, conumber, fname, ftext):
@@ -97,7 +101,9 @@ TT_RPAREN       = 'RPAREN'
 TT_NEWLINE      = 'NEWLINE'
 TT_EOF          = 'EOF'
 
-KEYWORDS = []
+KEYWORDS = [
+    'static'
+]
 
 class Token:
     def __init__(self, type_, value=None, pos_start=None, pos_end=None):
@@ -227,9 +233,10 @@ class IdentifierNode:
         return f"{self.id_name_token.value}"
 
 class IdAssignNode:
-    def __init__(self, id_name_token, value_node):
+    def __init__(self, id_name_token, value_node, manual_static):
         self.id_name_token = id_name_token
         self.value_node = value_node
+        self.manual_static = manual_static
 
         self.pos_start = self.id_name_token.pos_start
         self.pos_end = self.value_node.pos_end
@@ -370,6 +377,12 @@ class Parser:
     
     def identifier(self):
         res = ParseResult()
+        manual_static = False
+        
+        if self.current_token.type == TT_KEYWORD:
+            manual_static = True
+            res.register(self.increment())
+        
         identifier_name = self.current_token
         res.register(self.increment())
         
@@ -377,16 +390,16 @@ class Parser:
             return res.failure(InvalidSyntaxError(
                 self.current_token.pos_start, self.current_token.pos_end,
                 "Expected '='"
-            )) # This error might never occur
+            ))
         
         res.register(self.increment())
         expr = res.register(self.expr())
         if res.error: return res
-        return res.success(IdAssignNode(identifier_name, expr))
+        return res.success(IdAssignNode(identifier_name, expr, manual_static))
     
     def statement(self):
         res = ParseResult()
-        if self.current_token.type == TT_IDENTIFIER and self.tokens[self.token_index + 1].type == TT_EQ:
+        if (self.current_token.type == TT_IDENTIFIER and self.tokens[self.token_index + 1].type == TT_EQ) or (self.current_token.type == TT_KEYWORD and self.current_token.value == 'static'):
             statement = res.register(self.identifier())
         else:
             statement = res.register(self.expr())
@@ -611,10 +624,11 @@ class AnalizeResult:
         return self
 
 class Symbol:
-    def __init__(self, name, type_):
+    def __init__(self, name, type_, manual_static):
         self.accesser = name
         self.first_type = type_
         self.type = type_
+        self.manual_static = manual_static
         self.identifier = None
 
 ### SymbolTable ###
@@ -630,10 +644,12 @@ class SymbolTable:
             return SymbolNode(self.symbols[name])
         return None
     
-    def symbol_assign(self, name, node):
+    def symbol_assign(self, name, node, manual_static):
         if self.symbols.keys().__contains__(name):
             symbol = self.symbols[name]
             if node.type == symbol.type: return SymbolAssignNode(symbol, node),
+            if symbol.manual_static:
+                return None
             if symbol.identifier is None:
                 symbol.identifier = self.identifier_count
                 self.identifier_count += 1
@@ -641,7 +657,7 @@ class SymbolTable:
                 self.global_identifiers.append(symbol)
                 return SymbolTypeChangeNode(symbol, node.type), SymbolAssignNode(symbol, node)
             else: return SymbolTypeChangeNode(symbol, node.type), SymbolAssignNode(symbol, node)
-        symbol = Symbol(name, node.type)
+        symbol = Symbol(name, node.type, manual_static)
         self.symbols[name] = symbol
         self.global_variables.append(f"{node.type} {name}")
         return SymbolAssignNode(symbol, node),
@@ -678,7 +694,10 @@ class Analizer:
         value_node = res.register(self.visit(node.value_node))
         if res.error: return res
         name = node.id_name_token.value
-        answer = self.symbol_table.symbol_assign(name, value_node)
+        answer = self.symbol_table.symbol_assign(name, value_node, node.manual_static)
+        if answer is None: return res.failure(
+            TypeError_(node.pos_start, node.pos_end, f"Can't change static variables's type")
+        )
         if len(answer) > 1:
             self.libraries.add(LibraryNode('stdlib.h'))
         return res.success(answer)
@@ -699,7 +718,7 @@ class Analizer:
         if node.op_token.type == TT_DIV:
             return res.success(DivideNode(left_node, right_node))
         if node.op_token.type == TT_POW:
-            type_ = 'int' if left_node.type == 'int' and right_node.type == 'int' else 'float'
+            type_ = 'int' if left_node.type == 'int' and right_node.type == 'int' else 'double'
             self.libraries.add(LibraryNode('math.h'))
             return res.success(FunctionCallNode('pow', type_, (left_node, right_node)))
     

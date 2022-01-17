@@ -2,7 +2,7 @@ code        : (NEWLINE)* statement (NEWLINE)* (NEWLINE statement)* (NEWLINE)* EO
 
 statement   : expr | identifier
 
-identifier  : IDENTIFIER EQ expr
+identifier  : (KEYWORD:static)? IDENTIFIER EQ expr
 
 expr        : term ((PLUS|MINUS) term)*
 
