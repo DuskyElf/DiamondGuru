@@ -13,7 +13,7 @@ def super_string(text, pos_start, pos_end):
     
     # Calculate indices
     idx_start = max(text.rfind('\n', 0, pos_start.index), 0)
-    idx_end = text.rfind('\n', idx_start + 1)
+    idx_end = text.find('\n', idx_start + 1)
     if idx_end < 0: idx_end = len(text)
     
     # Gnerate lines
@@ -351,7 +351,7 @@ class Parser:
         
         return res.failure(InvalidSyntaxError(
                     self.current_token.pos_start, self.current_token.pos_end,
-                    "Expected int, float, '+', '-' or '('"
+                    "Expected int, float, identifier, '+', '-' or '('"
                 ))
 
     def power(self):
