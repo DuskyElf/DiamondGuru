@@ -233,11 +233,11 @@ class IdentifierNode:
         return f"{self.id_name_token.value}"
 
 class IdAssignNode:
-    def __init__(self, id_name_token, value_node, manual_static):
+    def __init__(self, id_name_token, value_node, manual_static, manual_static_token):
         self.id_name_token = id_name_token
         self.value_node = value_node
         self.manual_static = manual_static
-
+        self.manual_static_token = manual_static_token
         self.pos_start = self.id_name_token.pos_start
         self.pos_end = self.value_node.pos_end
     
@@ -378,9 +378,11 @@ class Parser:
     def identifier(self):
         res = ParseResult()
         manual_static = False
+        manual_static_token = None
         
         if self.current_token.type == TT_KEYWORD:
             manual_static = True
+            manual_static_token = self.current_token
             res.register(self.increment())
         
         identifier_name = self.current_token
@@ -395,7 +397,7 @@ class Parser:
         res.register(self.increment())
         expr = res.register(self.expr())
         if res.error: return res
-        return res.success(IdAssignNode(identifier_name, expr, manual_static))
+        return res.success(IdAssignNode(identifier_name, expr, manual_static, manual_static_token))
     
     def statement(self):
         res = ParseResult()
@@ -647,9 +649,11 @@ class SymbolTable:
     def symbol_assign(self, name, node, manual_static):
         if self.symbols.keys().__contains__(name):
             symbol = self.symbols[name]
-            if node.type == symbol.type: return SymbolAssignNode(symbol, node),
-            if symbol.manual_static:
-                return None
+            if symbol.identifier is not None and manual_static: return None
+            if node.type == symbol.type:
+                if manual_static: symbol.manual_static = True
+                return SymbolAssignNode(symbol, node),
+            if symbol.manual_static or manual_static: return None
             if symbol.identifier is None:
                 symbol.identifier = self.identifier_count
                 self.identifier_count += 1
@@ -695,6 +699,10 @@ class Analizer:
         if res.error: return res
         name = node.id_name_token.value
         answer = self.symbol_table.symbol_assign(name, value_node, node.manual_static)
+        if answer is None and node.manual_static: return res.failure(
+            TypeError_(node.manual_static_token.pos_start, node.manual_static_token.pos_end, 
+                       f"Can't make a dynamic variable static")
+        )
         if answer is None: return res.failure(
             TypeError_(node.pos_start, node.pos_end, f"Can't change static variables's type")
         )
