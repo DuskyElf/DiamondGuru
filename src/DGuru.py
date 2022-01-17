@@ -22,8 +22,8 @@ def super_string(text, pos_start, pos_end):
         line = text[idx_start:idx_end]
         col_start = pos_start.conumber if i == 0 else 0
         col_end = pos_end.conumber if i == line_count - 1 else len(line) - 1
-        
-        result += line + '\n'
+
+        result += line.replace('\n', '') + '\n'
         result += ' ' * col_start + '^' * (col_end - col_start)
         
         idx_start = idx_end
@@ -230,7 +230,7 @@ class IdAssignNode:
     def __init__(self, id_name_token, value_node):
         self.id_name_token = id_name_token
         self.value_node = value_node
-        
+
         self.pos_start = self.id_name_token.pos_start
         self.pos_end = self.value_node.pos_end
     
@@ -407,6 +407,8 @@ class Parser:
             while self.current_token.type == TT_NEWLINE:
                 res.register(self.increment())
                 temp = True
+            if self.current_token.type == TT_EOF:
+                return res.success(CodeNode(statements))
             if not temp:
                 if self.current_token.type == TT_EOF:
                     return res.success(CodeNode(statements))
@@ -437,6 +439,159 @@ class Parser:
             
         return res.success(left)
 
+### Nodes ###
+class IntNode:
+    def __init__(self, value: int):
+        self.value = value
+        self.type = 'int'
+    
+    def __repr__(self):
+        return f'{self.value}'
+
+class DoubleNode:
+    def __init__(self, value: float):
+        self.value = value
+        self.type = 'double'
+    
+    def __repr__(self):
+        return f'{self.value}'
+
+class SymbolNode:
+    def __init__(self, symbol):
+        self.symbol = symbol
+        self.type = symbol.type
+    
+    def __repr__(self):
+        if self.symbol.identifier is None: return f'{self.symbol.accesser}_'
+        return f'*({self.type}*)identifiers[{self.symbol.identifier}]'
+
+class SymbolAssignNode:
+    def __init__(self, symbol, node):
+        self.symbol = symbol
+        self.node = node
+        self.type = self.symbol.type
+    
+    def __repr__(self):
+        if self.symbol.identifier is None: return f'{self.symbol.accesser}_ = {self.node}'
+        return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}'
+
+class SymbolTypeChangeNode:
+    def __init__(self, symbol, type_):
+        self.identifier = symbol.identifier 
+        self.type = type_
+        symbol.type = self.type
+    
+    def __repr__(self):
+        return f'identifiers[{self.identifier}] = realloc(identifiers[{self.identifier}], sizeof({self.type}))'
+
+class NegateNode:
+    def __init__(self, node):
+        self.node = node
+        self.type = self.node.type
+    
+    def __repr__(self):
+        return f'-({self.node})'
+
+class AddNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        if self.left_node == 'int' and self.right_node == 'int': self.type = 'int'
+        else: self.type = 'double'
+    
+    def __repr__(self):
+        return f'({self.left_node})+({self.right_node})'
+
+class SubtractNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        if self.left_node == 'int' and self.right_node == 'int': self.type = 'int'
+        else: self.type = 'double'
+    
+    def __repr__(self):
+        return f'({self.left_node})-({self.right_node})'
+
+class MultiplyNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        if self.left_node == 'int' and self.right_node == 'int': self.type = 'int'
+        else: self.type = 'double'
+    
+    def __repr__(self):
+        return f'({self.left_node})*({self.right_node})'
+
+class DivideNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        self.type = 'double'
+    
+    def __repr__(self):
+        return f'({self.left_node})/({self.right_node})'
+
+class FunctionCallNode:
+    def __init__(self, name, type_, arguments):
+        self.name = name
+        self.type = type_
+        self.arguments = arguments
+    
+    def __repr__(self):
+        arg_str = ''
+        first = True
+        for argument in self.arguments:
+            if first: arg_str += f'{argument}'
+            else: arg_str += f', {argument}'
+            first = False
+        
+        return f'{self.name}({arg_str})'
+
+class CStatementNode:
+    def __init__(self, node):
+        self.node = node
+    
+    def __repr__(self):
+        return f'{self.node};\n'
+
+class LibraryNode:
+    def __init__(self, value):
+        self.value = value
+    
+    def __repr__(self):
+        return f'#include<{self.value}>\n'
+
+class GlobalVariableNode:
+    def __init__(self, name, type_):
+        self.name = name
+        self.type = type_
+    
+    def __repr__(self):
+        return f'{self.type} {self.name};\n'
+
+class CCodeNode:
+    def __init__(self, libraries, identifier_count, global_identifiers, global_variables, statement_nodes):
+        self.libraries = libraries
+        self.identifier_count = identifier_count
+        self.global_identifiers = global_identifiers
+        self.global_variables = global_variables
+        self.statement_nodes = statement_nodes
+    
+    def __repr__(self):
+        result = ''
+        for library in self.libraries:
+            result += f'{library}'
+        result += f'\nvoid* identifiers[{self.identifier_count}];\n'
+        for variable in self.global_variables:
+            result += f'{variable}_;\n'
+        result += 'int main(){\n'
+        for identifier in self.global_identifiers:
+            result += f'\tidentifiers[{identifier.identifier}] = calloc(1, sizeof({identifier.first_type}));\n'
+        for statement in self.statement_nodes:
+            result += f'\t{statement}'
+        result += '\treturn 0;\n}'
+        return result
+
 ### AnalizeResult ###
 class AnalizeResult:
     def __init__(self):
@@ -455,25 +610,47 @@ class AnalizeResult:
         self.error = error
         return self
 
-### Writer ###
-class Writer:
+class Symbol:
+    def __init__(self, name, type_):
+        self.accesser = name
+        self.first_type = type_
+        self.type = type_
+        self.identifier = None
+
+### SymbolTable ###
+class SymbolTable:
     def __init__(self):
-        self.core_code = ''
-        self.libraries = {"#include<stdlib.h>"}
-        self.identifiers = {}
+        self.symbols = {}
+        self.identifier_count = 0
+        self.global_identifiers = []
+        self.global_variables = []
     
-    def write_code(self, code):
-        self.core_code += code + ';\n'
+    def symbol_get(self, name):
+        if self.symbols.keys().__contains__(name):
+            return SymbolNode(self.symbols[name])
+        return None
     
-    def result(self):
-        self.core_code = f"int main(){{\n{self.core_code}\nreturn 0;\n}}"
-        self.core_code = f"void* identifiers[{len(self.identifiers)}];\n{self.core_code}"
-        for library in self.libraries:
-            self.core_code = f'{library}\n{self.core_code}'
-        return self.core_code
+    def symbol_assign(self, name, node):
+        if self.symbols.keys().__contains__(name):
+            symbol = self.symbols[name]
+            if node.type == symbol.type: return SymbolAssignNode(symbol, node),
+            if symbol.identifier is None:
+                symbol.identifier = self.identifier_count
+                self.identifier_count += 1
+                self.global_variables.remove(f"{symbol.type} {name}")
+                self.global_identifiers.append(symbol)
+                return SymbolTypeChangeNode(symbol, node.type), SymbolAssignNode(symbol, node)
+            else: return SymbolTypeChangeNode(symbol, node.type), SymbolAssignNode(symbol, node)
+        symbol = Symbol(name, node.type)
+        self.symbols[name] = symbol
+        self.global_variables.append(f"{node.type} {name}")
+        return SymbolAssignNode(symbol, node),
 
 ### Analizer ###
-class Analizer:    
+class Analizer:
+    def __init__(self):
+        self.libraries = set()
+    
     def visit(self, node):
         method_name = f'visit_{type(node).__name__}'
         method = getattr(self, method_name, self.no_visit_node)
@@ -483,49 +660,28 @@ class Analizer:
         raise Exception(f'No visit_{type(node).__name__} method defined.')
     
     def visit_NumberNode(self, node):
-        return AnalizeResult().success((node.token.value, type(node.token.value)))
+        res = AnalizeResult()
+        if type(node.token.value) is int: return res.success(IntNode(node.token.value))
+        if type(node.token.value) is float: return res.success(DoubleNode(node.token.value))
     
     def visit_IdentifierNode(self, node):
         res = AnalizeResult()
-        def map_type(type_):
-            if type_ == 'int': return int
-            if type_ == 'double': return float
-        
-        if node.id_name_token.value not in self.writer.identifiers.keys():
-            return res.failure(
-                NameError_(
-                    node.pos_start, node.pos_end,
-                    f"Name '{node.id_name_token.value}' is not defined"
-                )
-            )
-        
-        d = self.writer.identifiers[node.id_name_token.value]
-        return res.success((f"(*({d[1]}*)identifiers[{d[0]}])", map_type(d[1])))
+        name = node.id_name_token.value
+        symbol_node = self.symbol_table.symbol_get(name)
+        if symbol_node is None: return res.failure(
+            NameError_(node.pos_start, node.pos_end, f"Name '{name}' is not defined")
+        )
+        return res.success(symbol_node)
     
     def visit_IdAssignNode(self, node):
-        def map_type(type_):
-            if type_ is int: return 'int'
-            if type_ is float: return 'double'
-        
         res = AnalizeResult()
         value_node = res.register(self.visit(node.value_node))
         if res.error: return res
-        
         name = node.id_name_token.value
-        id_list = self.writer.identifiers
-        
-        if name in id_list.keys():
-            if map_type(value_node[1]) == id_list[name][1]:
-                return res.success((f"*({id_list[name][1]}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]))
-            
-            self.writer.write_code(f"identifiers[{id_list[name][0]}] = realloc(identifiers[{id_list[name][0]}], sizeof({map_type(value_node[1])}))")
-            id_list[name][1] = map_type(value_node[1])
-            return res.success((f"*({map_type(value_node[1])}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]))
-
-        id_list[name] = [-1, map_type(value_node[1])]
-        id_list[name][0] = list(id_list.keys()).index(name)
-        self.writer.write_code(f"identifiers[{id_list[name][0]}] = calloc(1, sizeof({map_type(value_node[1])}))")
-        return res.success((f"*({map_type(value_node[1])}*)identifiers[{id_list[name][0]}] = {value_node[0]}", value_node[1]))
+        answer = self.symbol_table.symbol_assign(name, value_node)
+        if len(answer) > 1:
+            self.libraries.add(LibraryNode('stdlib.h'))
+        return res.success(answer)
     
     def visit_BinOpNode(self, node):
         res = AnalizeResult()
@@ -533,22 +689,19 @@ class Analizer:
         if res.error: return res
         right_node = res.register(self.visit(node.right_node))
         if res.error: return res
-
-        if left_node[1] is float or right_node[1] is float:
-            eval_type = float
-        else: eval_type = int
         
         if node.op_token.type == TT_PLUS:
-            return res.success((f'({left_node[0]}+{right_node[0]})', eval_type))
+            return res.success(AddNode(left_node, right_node))
         if node.op_token.type == TT_MINUS:
-            return res.success((f'({left_node[0]}-{right_node[0]})', eval_type))
+            return res.success(SubtractNode(left_node, right_node))
         if node.op_token.type == TT_MUL:
-            return res.success((f'({left_node[0]}*{right_node[0]})', eval_type))
+            return res.success(MultiplyNode(left_node, right_node))
         if node.op_token.type == TT_DIV:
-            return res.success((f'({left_node[0]}/(double){right_node[0]})', float))
+            return res.success(DivideNode(left_node, right_node))
         if node.op_token.type == TT_POW:
-            self.writer.libraries.add("#include<math.h>")
-            return res.success((f'(pow({self.visit(node.left_node)}, {self.visit(node.right_node)}))', eval_type))
+            type_ = 'int' if left_node.type == 'int' and right_node.type == 'int' else 'float'
+            self.libraries.add(LibraryNode('math.h'))
+            return res.success(FunctionCallNode('pow', type_, (left_node, right_node)))
     
     def visit_UnaryOpNode(self, node):
         res = AnalizeResult()
@@ -556,25 +709,39 @@ class Analizer:
         if res.error: return res
         
         if node.op_token.type == TT_PLUS:
-            return res.success((f'(+{value_node[0]})', value_node[1]))
+            return res.success(value_node)
         if node.op_token.type == TT_MINUS:
-            return res.success((f'(-{value_node[0]})', value_node[1]))
+            return res.success(NegateNode(value_node))
     
     def visit_StatementNode(self, node):
         res = AnalizeResult()
         statement_node = res.register(self.visit(node.statement_node))
         if res.error: return res
-        return res.success((statement_node[0], statement_node[1]))
+        if isinstance(statement_node, tuple):
+            answer = []
+            for statement in statement_node:
+                answer.append(CStatementNode(statement))
+            return res.success(answer)
+        return res.success(CStatementNode(statement_node))
     
     def visit_CodeNode(self, node):
+        self.symbol_table = SymbolTable()
         res = AnalizeResult()
-        self.writer = Writer()
-        
+        statement_nodes = []
         for statement in node.statements:
             statement_node = res.register(self.visit(statement))
+            if isinstance(statement_node, list):
+                for sub_statement in statement_node:
+                    statement_nodes.append(sub_statement)
+            else: statement_nodes.append(statement_node)
             if res.error: return res
-            self.writer.write_code(statement_node[0])
-        return res.success(self.writer.result())
+        
+        return res.success(CCodeNode(self.libraries, self.symbol_table.identifier_count, self.symbol_table.global_identifiers, self.symbol_table.global_variables, statement_nodes))
+
+### Compiler ###
+class Compiler:
+    def code(self):
+        pass
 
 ### RUN ###
 def lex(file_name, context):
@@ -601,7 +768,7 @@ def run(file_name, context):
     
     c = analize(ast)
     if c.error: return None, c.error
-    return c.value, None
+    return c.value.__repr__(), None
 
 def open_code(file_name):
     try:
