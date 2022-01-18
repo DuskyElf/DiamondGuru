@@ -656,7 +656,7 @@ class FunctionCallNode:
             else: arg_str += f', {argument}'
             first = False
         
-        return f'{self.name}({arg_str})'
+        return f'({self.type}){self.name}({arg_str})'
 
 class EqualNode:
     def __init__(self, left_node, right_node):
@@ -943,7 +943,7 @@ class Analizer:
             return res.success(DivideNode(left_node, right_node))
         if node.op_token.type == TT_POW:
             type_ = 'int' if left_node.type == 'int' and right_node.type == 'int' else 'double'
-            self.libraries.add(self.libraries.add('#include<math.h>\n'))
+            self.libraries.add('#include<math.h>\n')
             return res.success(FunctionCallNode('pow', type_, (left_node, right_node)))
         if node.op_token.type == TT_EE:
             return res.success(EqualNode(left_node, right_node))
