@@ -4,11 +4,17 @@ statement   : expr | identifier
 
 identifier  : (KEYWORD:static)? IDENTIFIER EQ expr
 
-expr        : term ((PLUS|MINUS) term)*
+expr        : comp_expr ((KEYWORD:and|KEYWORD:or) comp_expr)*
+
+comp-expr   : KEYWORD:not comp_expr
+            : arith-expr ((EE|LT|GT|LTE|GTE) arith-expr)*
+
+arith-expr  : term ((PLUS|MINUS) term)*
 
 term        : factor ((MUL|DIV) factor)*
 
-factor      : (PLUS|MINUS) power
+factor      : (PLUS|MINUS) factor
+            : power
 
 power       : atom (POW factor)*
 

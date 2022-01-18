@@ -50,6 +50,10 @@ class IllegalCharError(Error):
     def __init__(self, pos_start, pos_end, details):
         super().__init__(pos_start, pos_end, "IllegalCharError", details)
 
+class ExpectedCharError(Error):
+    def __init__(self, pos_start, pos_end, details):
+        super().__init__(pos_start, pos_end, 'ExpectedCharError', details)
+
 class InvalidSyntaxError(Error):
     def __init__(self, pos_start, pos_end, details):
         super().__init__(pos_start, pos_end, 'InvalidSyntaxError', details)
@@ -98,11 +102,20 @@ TT_POW          = 'POW'
 TT_EQ           = 'EQ'
 TT_LPAREN       = 'LPAREN'
 TT_RPAREN       = 'RPAREN'
+TT_EE           = 'EE'
+TT_NE           = 'NE'
+TT_LT           = 'LT'
+TT_GT           = 'GT'
+TT_LTE          = 'LTE'
+TT_GTE          = 'GTE'
 TT_NEWLINE      = 'NEWLINE'
 TT_EOF          = 'EOF'
 
 KEYWORDS = [
-    'static'
+    'static',
+    'and',
+    'or',
+    'not'
 ]
 
 class Token:
@@ -163,15 +176,22 @@ class Lexer:
             elif self.current_char == '^':
                 tokens.append(Token(TT_POW, pos_start=self.pos))
                 self.increment()
-            elif self.current_char == '=':
-                tokens.append(Token(TT_EQ, pos_start=self.pos))
-                self.increment()
             elif self.current_char == '(':
                 tokens.append(Token(TT_LPAREN, pos_start=self.pos))
                 self.increment()
             elif self.current_char == ')':
                 tokens.append(Token(TT_RPAREN, pos_start=self.pos))
                 self.increment()
+            elif self.current_char == '!':
+                tok, error = self.make_not_equals()
+                if error: return [], error
+                tokens.append(tok)
+            elif self.current_char == '=':
+                tokens.append(self.make_equals())
+            elif self.current_char == '<':
+                tokens.append(self.make_less_than())
+            elif self.current_char == '>':
+                tokens.append(self.make_greater_than())
             else:
                 pos_start = self.pos.copy()
                 char = self.current_char
@@ -210,6 +230,50 @@ class Lexer:
         
         tok_type = TT_KEYWORD if id_str in KEYWORDS else TT_IDENTIFIER
         return Token(tok_type, id_str, pos_start, self.pos)
+    
+    def make_not_equals(self):
+        pos_start = self.pos.copy()
+        self.increment()
+        
+        if self.current_char == '=':
+            self.increment()
+            return Token(TT_NE, pos_start=pos_start, pos_end=self.pos), None
+        
+        self.increment()
+        return None, ExpectedCharError(pos_start, self.pos, "Expected '=' (after '!')")
+    
+    def make_equals(self):
+        tok_type = TT_EQ
+        pos_start = self.pos.copy()
+        self.increment()
+        
+        if self.current_char == '=':
+            self.increment()
+            tok_type = TT_EE
+        
+        return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
+    
+    def make_less_than(self):
+        tok_type = TT_LT
+        pos_start = self.pos.copy()
+        self.increment()
+        
+        if self.current_char == '=':
+            self.increment()
+            tok_type = TT_LTE
+        
+        return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
+    
+    def make_greater_than(self):
+        tok_type = TT_GT
+        pos_start = self.pos.copy()
+        self.increment()
+        
+        if self.current_char == '=':
+            self.increment()
+            tok_type = TT_GTE
+        
+        return Token(tok_type, pos_start=pos_start, pos_end=self.pos)
 
 ### NODES ###
 class NumberNode:
@@ -372,8 +436,31 @@ class Parser:
     def term(self):
         return self.bin_op(self.factor, (TT_MUL, TT_DIV))
     
-    def expr(self):
+    def arith_expr(self):
         return self.bin_op(self.term, (TT_PLUS, TT_MINUS))
+    
+    def comp_expr(self):
+        res = ParseResult()
+        
+        if self.current_token.type == TT_KEYWORD and self.current_token.value == 'not':
+            op_token = self.current_token
+            res.register(self.increment())
+            
+            node = res.register(self.comp_expr())
+            if res.error: return res
+            return res.success(UnaryOpNode(op_token, node))
+        
+        node = res.register(self.bin_op(self.arith_expr, (TT_EE, TT_NE, TT_LT, TT_GT, TT_LTE, TT_GTE)))
+        if res.error:
+            return res.failure(InvalidSyntaxError(
+                    self.current_token.pos_start, self.current_token.pos_end,
+                    "Expected int, float, identifier, '+', '-', '(' or 'not'"
+                ))
+        
+        return res.success(node)
+    
+    def expr(self):
+        return self.bin_op(self.comp_expr, ((TT_KEYWORD, 'and'), (TT_KEYWORD, 'or')))
     
     def identifier(self):
         res = ParseResult()
@@ -445,7 +532,7 @@ class Parser:
         left = res.register(func_a())
         if res.error: return res
 
-        while self.current_token.type in ops:
+        while self.current_token.type in ops or (self.current_token.type, self.current_token.value) in ops:
             op_token = self.current_token
             res.register(self.increment())
             right = res.register(func_b())
@@ -472,32 +559,41 @@ class DoubleNode:
         return f'{self.value}'
 
 class SymbolNode:
-    def __init__(self, symbol):
-        self.symbol = symbol
-        self.type = symbol.type
+    def __init__(self, symbols, name):
+        self.symbols = symbols
+        self.name = name
+        self.type = self.symbols[self.name].type
+        self.symbols[self.name].usage_count += 1
+        self.symbol_usage = self.symbols[self.name].usage_count
     
     def __repr__(self):
-        if self.symbol.identifier is None: return f'{self.symbol.accesser}_'
+        self.symbol = self.symbols[self.name]
+        if isinstance(self.symbol, Variable): return f'{self.symbol.name}_'
+        if self.symbol_usage == self.symbol.usage_count:
+            return f'*({self.type}*)identifiers[{self.symbol.identifier}]\\*after:free(identifiers[{self.symbol.identifier}])*\\'
         return f'*({self.type}*)identifiers[{self.symbol.identifier}]'
 
 class SymbolAssignNode:
-    def __init__(self, symbol, node):
-        self.symbol = symbol
+    def __init__(self, symbols, name, node, type_change=False):
+        self.symbols = symbols
+        self.name = name
         self.node = node
-        self.type = self.symbol.type
+        self.type_change = type_change
+        self.type = self.symbols[self.name].type
+        self.assign_count = self.symbols[self.name].assign_count
+        self.usage_till_now = self.symbols[self.name].usage_count
     
     def __repr__(self):
-        if self.symbol.identifier is None: return f'{self.symbol.accesser}_ = {self.node}'
+        self.symbol = self.symbols[self.name]
+        if self.symbol.usage_count - self.usage_till_now == 0:
+            return f'{self.node}'
+        
+        if isinstance(self.symbol, Variable): return f'{self.symbol.name}_ = {self.node}'
+        if self.type_change:
+            return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.type}))*\\'
+        if self.assign_count == 1:
+            return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = malloc(sizeof({self.type}))*\\'
         return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}'
-
-class SymbolTypeChangeNode:
-    def __init__(self, symbol, type_):
-        self.identifier = symbol.identifier 
-        self.type = type_
-        symbol.type = self.type
-    
-    def __repr__(self):
-        return f'identifiers[{self.identifier}] = realloc(identifiers[{self.identifier}], sizeof({self.type}))'
 
 class NegateNode:
     def __init__(self, node):
@@ -544,7 +640,7 @@ class DivideNode:
         self.type = 'double'
     
     def __repr__(self):
-        return f'({self.left_node})/({self.right_node})'
+        return f'({self.left_node})/(double)({self.right_node})'
 
 class FunctionCallNode:
     def __init__(self, name, type_, arguments):
@@ -562,19 +658,91 @@ class FunctionCallNode:
         
         return f'{self.name}({arg_str})'
 
+class EqualNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'({self.left_node})==({self.right_node})'
+
+class NotEqualNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+    
+    def __repr__(self):
+        return f'({self.left_node})!=({self.right_node})'
+
+class LessThanNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'({self.left_node})<({self.right_node})'
+
+class GreaterThanNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'({self.left_node})>({self.right_node})'
+
+class LessThanEqualNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'({self.left_node})<=({self.right_node})'
+
+class GreaterThanEqualNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'({self.left_node})>=({self.right_node})'
+
+class AndNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'({self.left_node})&&({self.right_node})'
+
+class OrNode:
+    def __init__(self, left_node, right_node):
+        self.left_node = left_node
+        self.right_node = right_node
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'({self.left_node})||({self.right_node})'
+
+class NotNode:
+    def __init__(self, node):
+        self.node = node
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'!({self.node})'
+
 class CStatementNode:
     def __init__(self, node):
         self.node = node
     
     def __repr__(self):
-        return f'{self.node};\n'
-
-class LibraryNode:
-    def __init__(self, value):
-        self.value = value
-    
-    def __repr__(self):
-        return f'#include<{self.value}>\n'
+        return f'{self.node}'
 
 class GlobalVariableNode:
     def __init__(self, name, type_):
@@ -585,25 +753,50 @@ class GlobalVariableNode:
         return f'{self.type} {self.name};\n'
 
 class CCodeNode:
-    def __init__(self, libraries, identifier_count, global_identifiers, global_variables, statement_nodes):
+    def __init__(self, libraries, identifier_count, global_variables, statement_nodes):
         self.libraries = libraries
         self.identifier_count = identifier_count
-        self.global_identifiers = global_identifiers
         self.global_variables = global_variables
         self.statement_nodes = statement_nodes
+    
+    def commandize(self, cmds, statement_str):
+        result = statement_str
+        for cmd in cmds:
+            cmd = cmd.replace('\\*', '')
+            cmd = cmd.replace('*\\', '')
+            for command in cmd.split(';'):
+                if not command: continue
+                head, line = command.split(':')
+                if head == 'before':
+                    result = f'{line};\n\t{result}'
+                if head == 'after':
+                    result = f'{result};\n\t{line}'
+        result += ';\n'
+        return result
     
     def __repr__(self):
         result = ''
         for library in self.libraries:
             result += f'{library}'
-        result += f'\nvoid* identifiers[{self.identifier_count}];\n'
+        if self.identifier_count:
+            result += f'\nvoid* identifiers[{self.identifier_count}];\n'
         for variable in self.global_variables:
-            result += f'{variable}_;\n'
+            if variable.usage_count:
+                result += f'{variable.type} {variable.name}_;\n'
         result += 'int main(){\n'
-        for identifier in self.global_identifiers:
-            result += f'\tidentifiers[{identifier.identifier}] = calloc(1, sizeof({identifier.first_type}));\n'
         for statement in self.statement_nodes:
-            result += f'\t{statement}'
+            statement_str = statement.__repr__()
+            if len(statement_str) < 2:
+                result += '\t' + statement_str + ';\n'
+                continue
+            
+            cmd = []
+            while '\\*' in statement_str:
+                tmpi = statement_str.find('\\*')
+                tmp = statement_str[tmpi:statement_str.find('*\\', tmpi)+2]
+                statement_str = statement_str.replace(tmp, '')
+                cmd.append(tmp)
+            result += '\t' + self.commandize(cmd, statement_str)
         result += '\treturn 0;\n}'
         return result
 
@@ -626,45 +819,83 @@ class AnalizeResult:
         return self
 
 class Symbol:
-    def __init__(self, name, type_, manual_static):
-        self.accesser = name
-        self.first_type = type_
+    def __init__(self, name, type_):
+        self.name = name
         self.type = type_
+        self.assign_count = 0
+        self.usage_count = 0
+        self.manual_static = False
+
+class Identifier(Symbol):
+    def __init__(self, name, type_, identifier, start_assign_count, start_usage_count):
+        super().__init__(name, type_)
+        self.identifier = identifier
+        self.first_type = self.type
+        self.assign_count = start_assign_count
+        self.usage_count = start_usage_count
+
+class Variable(Symbol):
+    def __init__(self, name, type_, manual_static):
+        super().__init__(name, type_)
         self.manual_static = manual_static
-        self.identifier = None
+    
+    def convert_to_identifier(self, identifier):
+        if self.manual_static:
+            return
+        return Identifier(self.name, self.type, identifier, self.assign_count, self.usage_count)
 
 ### SymbolTable ###
 class SymbolTable:
     def __init__(self):
         self.symbols = {}
         self.identifier_count = 0
-        self.global_identifiers = []
         self.global_variables = []
     
-    def symbol_get(self, name):
-        if self.symbols.keys().__contains__(name):
-            return SymbolNode(self.symbols[name])
-        return None
+    def symbol_get(self, name, node):
+        res = AnalizeResult()
+        if name in self.symbols.keys():
+            return res.success(SymbolNode(self.symbols, name))
+        return res.failure(
+            NameError_(node.pos_start, node.pos_end, f"Name '{name}' is not defined")
+        )
     
-    def symbol_assign(self, name, node, manual_static):
-        if self.symbols.keys().__contains__(name):
+    def symbol_assign(self, name, node, value_node, manual_static, libraries):
+        res = AnalizeResult()
+        if name in self.symbols.keys():
             symbol = self.symbols[name]
-            if symbol.identifier is not None and manual_static: return None
-            if node.type == symbol.type:
+            
+            if isinstance(symbol, Identifier) and manual_static:
+                return res.failure(
+                    TypeError_(node.manual_static_token.pos_start, node.manual_static_token.pos_end,
+                               "Can't make a dynamic variable static"
+                ))
+            
+            if value_node.type == symbol.type:
                 if manual_static: symbol.manual_static = True
-                return SymbolAssignNode(symbol, node),
-            if symbol.manual_static or manual_static: return None
-            if symbol.identifier is None:
-                symbol.identifier = self.identifier_count
+                symbol.assign_count += 1
+                return res.success(SymbolAssignNode(self.symbols, name, value_node))
+            
+            if symbol.manual_static or manual_static:
+                return res.failure(
+                    TypeError_(node.pos_start, node.pos_end, 
+                    f"Can't change static variables's type"
+                ))
+                
+            if isinstance(symbol, Variable):
+                self.global_variables.remove(symbol)
+                symbol = symbol.convert_to_identifier(self.identifier_count)
+                self.symbols[name] = symbol
                 self.identifier_count += 1
-                self.global_variables.remove(f"{symbol.type} {name}")
-                self.global_identifiers.append(symbol)
-                return SymbolTypeChangeNode(symbol, node.type), SymbolAssignNode(symbol, node)
-            else: return SymbolTypeChangeNode(symbol, node.type), SymbolAssignNode(symbol, node)
-        symbol = Symbol(name, node.type, manual_static)
+                libraries.add('#include<stdlib.h>\n')
+            symbol.type = value_node.type
+            symbol.assign_count += 1
+            return res.success(SymbolAssignNode(self.symbols, name, value_node, type_change=True))
+            
+        symbol = Variable(name, value_node.type, manual_static)
         self.symbols[name] = symbol
-        self.global_variables.append(f"{node.type} {name}")
-        return SymbolAssignNode(symbol, node),
+        self.global_variables.append(symbol)
+        symbol.assign_count += 1
+        return res.success(SymbolAssignNode(self.symbols, name, value_node))
 
 ### Analizer ###
 class Analizer:
@@ -685,30 +916,15 @@ class Analizer:
         if type(node.token.value) is float: return res.success(DoubleNode(node.token.value))
     
     def visit_IdentifierNode(self, node):
-        res = AnalizeResult()
-        name = node.id_name_token.value
-        symbol_node = self.symbol_table.symbol_get(name)
-        if symbol_node is None: return res.failure(
-            NameError_(node.pos_start, node.pos_end, f"Name '{name}' is not defined")
-        )
-        return res.success(symbol_node)
+        return self.symbol_table.symbol_get(node.id_name_token.value, node)
     
     def visit_IdAssignNode(self, node):
         res = AnalizeResult()
         value_node = res.register(self.visit(node.value_node))
         if res.error: return res
         name = node.id_name_token.value
-        answer = self.symbol_table.symbol_assign(name, value_node, node.manual_static)
-        if answer is None and node.manual_static: return res.failure(
-            TypeError_(node.manual_static_token.pos_start, node.manual_static_token.pos_end, 
-                       f"Can't make a dynamic variable static")
-        )
-        if answer is None: return res.failure(
-            TypeError_(node.pos_start, node.pos_end, f"Can't change static variables's type")
-        )
-        if len(answer) > 1:
-            self.libraries.add(LibraryNode('stdlib.h'))
-        return res.success(answer)
+        answer = self.symbol_table.symbol_assign(name, node, value_node, node.manual_static, self.libraries)
+        return answer
     
     def visit_BinOpNode(self, node):
         res = AnalizeResult()
@@ -727,8 +943,24 @@ class Analizer:
             return res.success(DivideNode(left_node, right_node))
         if node.op_token.type == TT_POW:
             type_ = 'int' if left_node.type == 'int' and right_node.type == 'int' else 'double'
-            self.libraries.add(LibraryNode('math.h'))
+            self.libraries.add(self.libraries.add('#include<math.h>\n'))
             return res.success(FunctionCallNode('pow', type_, (left_node, right_node)))
+        if node.op_token.type == TT_EE:
+            return res.success(EqualNode(left_node, right_node))
+        if node.op_token.type == TT_EE:
+            return res.success(NotEqualNode(left_node, right_node))
+        if node.op_token.type == TT_LT:
+            return res.success(LessThanNode(left_node, right_node))
+        if node.op_token.type == TT_GT:
+            return res.success(GreaterThanNode(left_node, right_node))
+        if node.op_token.type == TT_LTE:
+            return res.success(LessThanEqualNode(left_node, right_node))
+        if node.op_token.type == TT_GTE:
+            return res.success(GreaterThanEqualNode(left_node, right_node))
+        if node.op_token.type == TT_KEYWORD and node.op_token.value == 'and':
+            return res.success(AndNode(left_node, right_node))
+        if node.op_token.type == TT_KEYWORD and node.op_token.value == 'or':
+            return res.success(OrNode(left_node, right_node))
     
     def visit_UnaryOpNode(self, node):
         res = AnalizeResult()
@@ -739,16 +971,13 @@ class Analizer:
             return res.success(value_node)
         if node.op_token.type == TT_MINUS:
             return res.success(NegateNode(value_node))
+        if node.op_token.type == TT_KEYWORD and node.op_token.value == 'or':
+            return res.success(NotNode(value_node))
     
     def visit_StatementNode(self, node):
         res = AnalizeResult()
         statement_node = res.register(self.visit(node.statement_node))
         if res.error: return res
-        if isinstance(statement_node, tuple):
-            answer = []
-            for statement in statement_node:
-                answer.append(CStatementNode(statement))
-            return res.success(answer)
         return res.success(CStatementNode(statement_node))
     
     def visit_CodeNode(self, node):
@@ -756,19 +985,9 @@ class Analizer:
         res = AnalizeResult()
         statement_nodes = []
         for statement in node.statements:
-            statement_node = res.register(self.visit(statement))
-            if isinstance(statement_node, list):
-                for sub_statement in statement_node:
-                    statement_nodes.append(sub_statement)
-            else: statement_nodes.append(statement_node)
+            statement_nodes.append(res.register(self.visit(statement)))
             if res.error: return res
-        
-        return res.success(CCodeNode(self.libraries, self.symbol_table.identifier_count, self.symbol_table.global_identifiers, self.symbol_table.global_variables, statement_nodes))
-
-### Compiler ###
-class Compiler:
-    def code(self):
-        pass
+        return res.success(CCodeNode(self.libraries, self.symbol_table.identifier_count, self.symbol_table.global_variables, statement_nodes))
 
 ### RUN ###
 def lex(file_name, context):
@@ -795,7 +1014,7 @@ def run(file_name, context):
     
     c = analize(ast)
     if c.error: return None, c.error
-    return c.value.__repr__(), None
+    return c.value, None
 
 def open_code(file_name):
     try:
@@ -830,7 +1049,7 @@ def main():
         else:
             xfile = file_name.split('.')[0]
             with open(xfile+'.c', 'w') as f:
-                f.write(result)
+                f.write(result.__repr__())
             try:
                 subprocess.Popen(f"gcc {xfile+'.c'} -o {xfile+'.exe'}")
             except FileNotFoundError:
