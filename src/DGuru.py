@@ -459,9 +459,6 @@ class Parser:
         
         return res.success(node)
     
-    def expr(self):
-        return self.bin_op(self.comp_expr, ((TT_KEYWORD, 'and'), (TT_KEYWORD, 'or')))
-    
     def identifier(self):
         res = ParseResult()
         manual_static = False
@@ -486,13 +483,16 @@ class Parser:
         if res.error: return res
         return res.success(IdAssignNode(identifier_name, expr, manual_static, manual_static_token))
     
-    def statement(self):
+    def expr(self):
         res = ParseResult()
         if (self.current_token.type == TT_IDENTIFIER and self.tokens[self.token_index + 1].type == TT_EQ) or (self.current_token.type == TT_KEYWORD and self.current_token.value == 'static'):
-            statement = res.register(self.identifier())
+            return res.success(res.register(self.identifier()))
         else:
-            statement = res.register(self.expr())
-        
+            return self.bin_op(self.comp_expr, ((TT_KEYWORD, 'and'), (TT_KEYWORD, 'or')))
+       
+    def statement(self):
+        res = ParseResult()
+        statement = res.register(self.expr())
         if res.error: return res
         return res.success(StatementNode(statement))
     

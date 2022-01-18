@@ -1,10 +1,11 @@
 code        : (NEWLINE)* statement (NEWLINE)* (NEWLINE statement)* (NEWLINE)* EOF
 
-statement   : expr | identifier
-
-identifier  : (KEYWORD:static)? IDENTIFIER EQ expr
+statement   : expr
 
 expr        : comp_expr ((KEYWORD:and|KEYWORD:or) comp_expr)*
+            : identifier
+
+identifier  : (KEYWORD:static)? IDENTIFIER EQ expr
 
 comp-expr   : KEYWORD:not comp_expr
             : arith-expr ((EE|LT|GT|LTE|GTE) arith-expr)*
