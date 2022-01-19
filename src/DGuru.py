@@ -1,3 +1,4 @@
+from lib2to3.pgen2 import token
 import sys
 import subprocess
 import string
@@ -115,7 +116,9 @@ KEYWORDS = [
     'static',
     'and',
     'or',
-    'not'
+    'not',
+    'True',
+    'False'
 ]
 
 class Token:
@@ -286,6 +289,16 @@ class NumberNode:
     def __repr__(self):
         return f"{self.token.value}"
 
+class KeywordValueNode:
+    def __init__(self, token):
+        self.token = token
+        
+        self.pos_start = self.token.pos_start
+        self.pos_end = self.token.pos_end
+    
+    def __repr__(self):
+        return f"{self.token.value}"
+
 class IdentifierNode:
     def __init__(self, id_name_token):
         self.id_name_token = id_name_token
@@ -399,6 +412,14 @@ class Parser:
         elif tok.type == TT_IDENTIFIER:
             res.register(self.increment())
             return res.success(IdentifierNode(tok))
+        
+        elif tok.type == TT_KEYWORD and tok.value == 'True':
+            res.register(self.increment())
+            return res.success(KeywordValueNode(tok))
+        
+        elif tok.type == TT_KEYWORD and tok.value == 'False':
+            res.register(self.increment())
+            return res.success(KeywordValueNode(tok))
 
         elif tok.type == TT_LPAREN:
             res.register(self.increment())
@@ -415,7 +436,7 @@ class Parser:
         
         return res.failure(InvalidSyntaxError(
                     self.current_token.pos_start, self.current_token.pos_end,
-                    "Expected int, float, identifier, '+', '-' or '('"
+                    "Expected int, float, identifier, True, False, '+', '-' or '('"
                 ))
 
     def power(self):
@@ -558,6 +579,22 @@ class DoubleNode:
     def __repr__(self):
         return f'{self.value}'
 
+class TrueNode:
+    def __init__(self):
+        self.value = 1
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'{self.value}'
+
+class FalseNode:
+    def __init__(self):
+        self.value = 0
+        self.type = '_Bool'
+    
+    def __repr__(self):
+        return f'{self.value}'
+
 class SymbolNode:
     def __init__(self, symbols, name):
         self.symbols = symbols
@@ -607,8 +644,8 @@ class AddNode:
     def __init__(self, left_node, right_node):
         self.left_node = left_node
         self.right_node = right_node
-        if self.left_node == 'int' and self.right_node == 'int': self.type = 'int'
-        else: self.type = 'double'
+        if self.left_node == 'double' or self.right_node == 'double': self.type = 'double'
+        else: self.type = 'int'
     
     def __repr__(self):
         return f'({self.left_node})+({self.right_node})'
@@ -617,8 +654,8 @@ class SubtractNode:
     def __init__(self, left_node, right_node):
         self.left_node = left_node
         self.right_node = right_node
-        if self.left_node == 'int' and self.right_node == 'int': self.type = 'int'
-        else: self.type = 'double'
+        if self.left_node == 'double' or self.right_node == 'double': self.type = 'double'
+        else: self.type = 'int'
     
     def __repr__(self):
         return f'({self.left_node})-({self.right_node})'
@@ -627,8 +664,8 @@ class MultiplyNode:
     def __init__(self, left_node, right_node):
         self.left_node = left_node
         self.right_node = right_node
-        if self.left_node == 'int' and self.right_node == 'int': self.type = 'int'
-        else: self.type = 'double'
+        if self.left_node == 'double' or self.right_node == 'double': self.type = 'double'
+        else: self.type = 'int'
     
     def __repr__(self):
         return f'({self.left_node})*({self.right_node})'
@@ -915,6 +952,13 @@ class Analizer:
         if type(node.token.value) is int: return res.success(IntNode(node.token.value))
         if type(node.token.value) is float: return res.success(DoubleNode(node.token.value))
     
+    def visit_KeywordValueNode(self, node):
+        res = AnalizeResult()
+        if node.token.value == 'True':
+            return res.success(TrueNode())
+        if node.token.value == 'False':
+            return res.success(FalseNode())
+    
     def visit_IdentifierNode(self, node):
         return self.symbol_table.symbol_get(node.id_name_token.value, node)
     
@@ -942,7 +986,7 @@ class Analizer:
         if node.op_token.type == TT_DIV:
             return res.success(DivideNode(left_node, right_node))
         if node.op_token.type == TT_POW:
-            type_ = 'int' if left_node.type == 'int' and right_node.type == 'int' else 'double'
+            type_ = 'double' if left_node.type == 'double' or right_node.type == 'double' else 'int'
             self.libraries.add('#include<math.h>\n')
             return res.success(FunctionCallNode('pow', type_, (left_node, right_node)))
         if node.op_token.type == TT_EE:
