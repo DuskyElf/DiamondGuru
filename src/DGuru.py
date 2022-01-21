@@ -1,4 +1,3 @@
-from lib2to3.pgen2 import token
 import sys
 import subprocess
 import string
@@ -118,7 +117,11 @@ KEYWORDS = [
     'or',
     'not',
     'True',
-    'False'
+    'False',
+    'if',
+    'elif',
+    'else',
+    'end'
 ]
 
 class Token:
@@ -158,8 +161,7 @@ class Lexer:
             if self.current_char in ' \t':
                 self.increment()
             elif self.current_char in ';\n':
-                tokens.append(Token(TT_NEWLINE, pos_start=self.pos))
-                self.increment()
+                tokens.append(self.make_newline())
             elif self.current_char in DIGITS:
                 tokens.append(self.define_number())
             elif self.current_char in LETTERS:
@@ -203,6 +205,13 @@ class Lexer:
         
         tokens.append(Token(TT_EOF, pos_start=self.pos))
         return tokens, None
+    
+    def make_newline(self):
+        pos_start = self.pos.copy()
+        while self.current_char != None and self.current_char in ';\n':
+            self.increment()
+        
+        return Token(TT_NEWLINE, pos_start=pos_start, pos_end=self.pos)
     
     def define_number(self):
         num_str = ''
@@ -321,6 +330,15 @@ class IdAssignNode:
     def __repr__(self):
         return f"IdentifierAssign({self.id_name_token.value}, {self.value_node})"
 
+class IfNode:
+    def __init__(self, if_value, elif_values, else_value):
+        self.if_value = if_value
+        self.elif_values = elif_values
+        self.else_value = else_value
+    
+    def __repr__(self):
+        return f"if({self.if_value}, {self.elif_values}, {self.else_value})"
+
 class BinOpNode:
     def __init__(self, left_node, op_token, right_node):
         self.left_node = left_node
@@ -394,11 +412,6 @@ class Parser:
     
     def parser(self):
         res = self.code()
-        if not res.error and self.current_token.type != TT_EOF:
-            return res.failure(InvalidSyntaxError(
-                self.current_token.pos_start, self.current_token.pos_end,
-                "Expected '+', '-', '*' or '/'"
-            ))
         return res
 
     def atom(self):
@@ -436,7 +449,7 @@ class Parser:
         
         return res.failure(InvalidSyntaxError(
                     self.current_token.pos_start, self.current_token.pos_end,
-                    "Expected int, float, identifier, True, False, '+', '-' or '('"
+                    "Expected expression or '('"
                 ))
 
     def power(self):
@@ -475,7 +488,7 @@ class Parser:
         if res.error:
             return res.failure(InvalidSyntaxError(
                     self.current_token.pos_start, self.current_token.pos_end,
-                    "Expected int, float, identifier, '+', '-', '(' or 'not'"
+                    "Expected expression, '(' or 'not'"
                 ))
         
         return res.success(node)
@@ -485,10 +498,16 @@ class Parser:
         manual_static = False
         manual_static_token = None
         
-        if self.current_token.type == TT_KEYWORD:
+        if self.current_token.type == TT_KEYWORD and self.current_token.value == 'static':
             manual_static = True
             manual_static_token = self.current_token
             res.register(self.increment())
+        
+        if self.current_token.type != TT_IDENTIFIER:
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected valid identifier name"
+            ))
         
         identifier_name = self.current_token
         res.register(self.increment())
@@ -510,40 +529,73 @@ class Parser:
             return res.success(res.register(self.identifier()))
         else:
             return self.bin_op(self.comp_expr, ((TT_KEYWORD, 'and'), (TT_KEYWORD, 'or')))
-       
+    
+    def if_expr(self):
+        res = ParseResult()
+        if_token = self.current_token
+        res.register(self.increment())
+        
+        if_expr_value = []
+        if_expr_value.append(res.register(self.atom()))
+        if res.error: return res
+        
+        if_expr_value.append(res.register(
+            self.code_block((
+                (TT_KEYWORD, 'elif'), 
+                (TT_KEYWORD, 'else'), 
+                (TT_KEYWORD, 'end')
+            ), if_token.pos_start, if_token.pos_end)
+        ))
+        if res.error: return res
+        
+        elif_expr_values = []
+        while self.current_token.type == TT_KEYWORD and self.current_token.value == 'elif':
+            elif_expr_value = []
+            elif_token = self.current_token
+            res.register(self.increment())
+            elif_expr_value.append(res.register(self.atom()))
+            if res.error: return res
+            
+            elif_expr_value.append(res.register(
+                self.code_block((
+                    (TT_KEYWORD, 'elif'), 
+                    (TT_KEYWORD, 'else'), 
+                    (TT_KEYWORD, 'end')
+                ), elif_token.pos_start, elif_token.pos_end)
+            ))
+            if res.error: return res
+            elif_expr_values.append(elif_expr_value)
+        
+        else_expr_value = None
+        if self.current_token.type == TT_KEYWORD and self.current_token.value == 'else':
+            else_token = self.current_token
+            res.register(self.increment())
+            
+            else_expr_value = (res.register(
+                self.code_block((
+                    (TT_KEYWORD, 'end'),
+                ), else_token.pos_start, else_token.pos_end)
+            ))
+            if res.error: return res
+        
+        res.register(self.increment())
+        return res.success(IfNode(if_expr_value, elif_expr_values, else_expr_value))
+    
     def statement(self):
         res = ParseResult()
-        statement = res.register(self.expr())
+        if self.current_token.type == TT_KEYWORD and self.current_token.value == 'if':
+            statement = res.register(self.if_expr())
+        else:
+            statement = res.register(self.expr())
         if res.error: return res
         return res.success(StatementNode(statement))
     
     def code(self):
         res = ParseResult()
-        statements = []
-        while self.current_token.type == TT_NEWLINE:
-            res.register(self.increment())
-            temp = True
-        while self.current_token.type != TT_EOF:
-            statements.append(res.register(self.statement()))
-            if res.error: return res
-            temp = False
-            while self.current_token.type == TT_NEWLINE:
-                res.register(self.increment())
-                temp = True
-            if self.current_token.type == TT_EOF:
-                return res.success(CodeNode(statements))
-            if not temp:
-                if self.current_token.type == TT_EOF:
-                    return res.success(CodeNode(statements))
-                else:
-                    return res.failure(InvalidSyntaxError(
-                        self.current_token.pos_start, self.current_token.pos_end,
-                        "Expected '\\n' or ';'"
-                    ))
-        return res.failure(InvalidSyntaxError(
-                self.current_token.pos_start, self.current_token.pos_end,
-                "Expected statement, empty files are not compilable"
-            ))
+        statements = res.register(self.code_block((TT_EOF,)))
+        if res.error: return res
+
+        return res.success(CodeNode(statements))
     
     #######################################################
     
@@ -561,6 +613,40 @@ class Parser:
             left = BinOpNode(left, op_token, right)
             
         return res.success(left)
+    
+    def code_block(self, ends, pos_start=None, pos_end=None):
+        statements = []
+        res = ParseResult()
+        if self.current_token.type == TT_NEWLINE:
+            res.register(self.increment())
+        
+        statements.append(res.register(self.statement()))
+        if res.error: return res
+        
+        while True:
+            if self.current_token.type in ends or (self.current_token.type, self.current_token.value) in ends: break
+            try:
+                if self.tokens[self.token_index+1].type in ends or (self.tokens[self.token_index+1].type, self.tokens[self.token_index+1].value) in ends: break
+            except IndexError:  
+                if self.current_token.type == TT_EOF:
+                    return res.failure(InvalidSyntaxError(
+                        pos_start, pos_end,
+                        "This code-block starting have no ending"
+                    ))
+            
+            if self.current_token.type != TT_NEWLINE:
+                return res.failure(InvalidSyntaxError(
+                    self.current_token.pos_start, self.current_token.pos_end,
+                    "Expected '\\n' or ';'"
+                ))
+            res.register(self.increment())
+            
+            statements.append(res.register(self.statement()))
+            if res.error: return res
+        
+        if self.current_token.type == TT_NEWLINE:
+            res.register(self.increment())
+        return res.success(statements)
 
 ### Nodes ###
 class IntNode:
@@ -606,9 +692,15 @@ class SymbolNode:
     def __repr__(self):
         self.symbol = self.symbols[self.name]
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_'
+        if isinstance(self.type, list):
+            result = '('
+            for i, type_ in enumerate(self.type):
+                result += f'{self.symbol.name}_type=={i}? (*({type_}*)identifiers[{self.symbol.identifier}]): '
+            result += '0)'
+        else: result = f'*({self.type}*)identifiers[{self.symbol.identifier}]'
         if self.symbol_usage == self.symbol.usage_count:
-            return f'*({self.type}*)identifiers[{self.symbol.identifier}]\\*after:free(identifiers[{self.symbol.identifier}])*\\'
-        return f'*({self.type}*)identifiers[{self.symbol.identifier}]'
+            return result + f'\\*after:free(identifiers[{self.symbol.identifier}])*\\'
+        return result
 
 class SymbolAssignNode:
     def __init__(self, symbols, name, node, type_change=False):
@@ -616,7 +708,10 @@ class SymbolAssignNode:
         self.name = name
         self.node = node
         self.type_change = type_change
-        self.type = self.symbols[self.name].type
+        self.type = node.type
+        if isinstance(self.symbols[self.name].type, list):
+            self.symbol_type = self.symbols[self.name].type.copy()
+        else: self.symbol_type = self.symbols[self.name].type
         self.assign_count = self.symbols[self.name].assign_count
         self.usage_till_now = self.symbols[self.name].usage_count
     
@@ -626,8 +721,12 @@ class SymbolAssignNode:
             return f'{self.node}'
         
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_ = {self.node}'
+        
         if self.type_change:
+            if isinstance(self.symbol_type, list):
+                return f'*({self.symbol_type[-1]}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.symbol_type[-1]}));after:{self.symbol.name}_type = {len(self.symbol_type)-1};pre-before:int {self.symbol.name}_type = 0*\\'
             return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.type}))*\\'
+        
         if self.assign_count == 1:
             return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = malloc(sizeof({self.type}))*\\'
         return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}'
@@ -774,6 +873,63 @@ class NotNode:
     def __repr__(self):
         return f'!({self.node})'
 
+class CIfNode:
+    def __init__(self, if_value, elif_values, else_value):
+        self.if_value = if_value
+        self.elif_values = elif_values
+        self.else_value = else_value
+    
+    def commandize(self, cmds, statement_str):
+        result = statement_str
+        for cmd in cmds:
+            cmd = cmd.replace('\\*', '')
+            cmd = cmd.replace('*\\', '')
+            for command in cmd.split(';'):
+                if not command: continue
+                head, line = command.split(':')
+                if head == 'before':
+                    result = f'{line};\n{result}'
+                if head == 'after':
+                    result = f'{result};\n{line}'
+                if head == 'pre-before':
+                    result += f'\\*before:{line}*\\'
+        result += ';\n'
+        return result
+    
+    def code_block(self, statements):
+        result = ''
+        for statement in statements:
+            statement_str = statement.__repr__()
+            if len(statement_str) < 2:
+                result += statement_str + ';\n'
+                continue
+            
+            cmd = []
+            while '\\*' in statement_str:
+                tmpi = statement_str.find('\\*')
+                tmp = statement_str[tmpi:statement_str.find('*\\', tmpi)+2]
+                statement_str = statement_str.replace(tmp, '')
+                cmd.append(tmp)
+            result += self.commandize(cmd, statement_str)
+        return result
+    
+    def __repr__(self):
+        result = f'if ({self.if_value[0]}){{\n'
+        result += self.code_block(self.if_value[1])
+        result += '}'
+        
+        for elif_value in self.elif_values:
+            result += f'else if ({elif_value[0]}){{\n'
+            result += self.code_block(elif_value[1])
+            result += '}'
+        
+        if self.else_value:
+            result += 'else{\n'
+            result += self.code_block(self.else_value)
+            result += '}'
+        
+        return result
+
 class CStatementNode:
     def __init__(self, node):
         self.node = node
@@ -805,9 +961,9 @@ class CCodeNode:
                 if not command: continue
                 head, line = command.split(':')
                 if head == 'before':
-                    result = f'{line};\n\t{result}'
+                    result = f'{line};\n{result}'
                 if head == 'after':
-                    result = f'{result};\n\t{line}'
+                    result = f'{result};\n{line}'
         result += ';\n'
         return result
     
@@ -824,7 +980,7 @@ class CCodeNode:
         for statement in self.statement_nodes:
             statement_str = statement.__repr__()
             if len(statement_str) < 2:
-                result += '\t' + statement_str + ';\n'
+                result += statement_str + ';\n'
                 continue
             
             cmd = []
@@ -833,8 +989,8 @@ class CCodeNode:
                 tmp = statement_str[tmpi:statement_str.find('*\\', tmpi)+2]
                 statement_str = statement_str.replace(tmp, '')
                 cmd.append(tmp)
-            result += '\t' + self.commandize(cmd, statement_str)
-        result += '\treturn 0;\n}'
+            result += self.commandize(cmd, statement_str)
+        result += 'return 0;\n}'
         return result
 
 ### AnalizeResult ###
@@ -870,6 +1026,7 @@ class Identifier(Symbol):
         self.first_type = self.type
         self.assign_count = start_assign_count
         self.usage_count = start_usage_count
+        self.if_thingy = 0
 
 class Variable(Symbol):
     def __init__(self, name, type_, manual_static):
@@ -883,7 +1040,11 @@ class Variable(Symbol):
 
 ### SymbolTable ###
 class SymbolTable:
+    BRANCH_IF = 0
+    BRANCH_ELSE = 1
     def __init__(self):
+        self.branchs = []
+        self.branch_count = 0
         self.symbols = {}
         self.identifier_count = 0
         self.global_variables = []
@@ -917,22 +1078,49 @@ class SymbolTable:
                     TypeError_(node.pos_start, node.pos_end, 
                     f"Can't change static variables's type"
                 ))
-                
+            
             if isinstance(symbol, Variable):
                 self.global_variables.remove(symbol)
                 symbol = symbol.convert_to_identifier(self.identifier_count)
                 self.symbols[name] = symbol
                 self.identifier_count += 1
                 libraries.add('#include<stdlib.h>\n')
-            symbol.type = value_node.type
+            if self.branchs:
+                if self.branchs[-1] == SymbolTable.BRANCH_IF:
+                    if isinstance(symbol.type, list): symbol.type.append(value_node.type)
+                    else: symbol.type = [symbol.type, value_node.type]
+                    symbol.if_thingy == self.branch_count
+                else:
+                    if isinstance(symbol.type, list):
+                        if symbol.if_thingy +1 == self.branch_count:
+                            symbol.type[0] = value_node.type
+                        else: symbol.type.append(value_node.type)
+                    else:  symbol.type = [symbol.type, value_node.type]
+            else:
+                symbol.type = value_node.type
             symbol.assign_count += 1
             return res.success(SymbolAssignNode(self.symbols, name, value_node, type_change=True))
-            
+        
+        if self.branchs:
+            return res.failure(NameError_(
+                node.pos_start, node.pos_end,
+                "Can't initiate an identifier inside a branch"
+            ))
         symbol = Variable(name, value_node.type, manual_static)
         self.symbols[name] = symbol
         self.global_variables.append(symbol)
         symbol.assign_count += 1
         return res.success(SymbolAssignNode(self.symbols, name, value_node))
+
+    def start_if_branch(self):
+        self.branch_count += 1
+        self.branchs.append(SymbolTable.BRANCH_IF)
+    
+    def start_else_branch(self):
+        self.branchs.append(SymbolTable.BRANCH_ELSE)
+    
+    def end_branch(self):
+        self.branchs.pop()
 
 ### Analizer ###
 class Analizer:
@@ -969,6 +1157,45 @@ class Analizer:
         name = node.id_name_token.value
         answer = self.symbol_table.symbol_assign(name, node, value_node, node.manual_static, self.libraries)
         return answer
+    
+    def visit_IfNode(self, node):
+        res = AnalizeResult()
+        if_value_node = []
+        self.symbol_table.start_if_branch()
+        if_value_node.append(res.register(self.visit(node.if_value[0])))
+        if res.error: return res
+        
+        if_statement_nodes = []
+        for statement in node.if_value[1]:
+            if_statement_nodes.append(res.register(self.visit(statement)))
+            if res.error: return res
+        if_value_node.append(if_statement_nodes)
+        self.symbol_table.end_branch()
+        elif_value_nodes = []
+        for elif_value in node.elif_values:
+            self.symbol_table.start_else_branch()
+            self.symbol_table.start_if_branch()
+            elif_expr, elif_statements = elif_value
+            elif_value_node = []
+            elif_value_node.append(res.register(self.visit(elif_expr)))
+            if res.error: return res
+            elif_statement_nodes = []
+            for statement in elif_statements:
+                elif_statement_nodes.append(res.register(self.visit(statement)))
+                if res.error: return res
+            elif_value_node.append(elif_statement_nodes)
+            elif_value_nodes.append(elif_value_node)
+            self.symbol_table.end_branch()
+            self.symbol_table.end_branch()
+        
+        else_value_node = []
+        if node.else_value is not None:
+            self.symbol_table.start_else_branch()
+            for statement in node.else_value:
+                else_value_node.append(res.register(self.visit(statement)))
+                if res.error: return res
+            self.symbol_table.end_branch()
+        return res.success(CIfNode(if_value_node, elif_value_nodes, else_value_node))
     
     def visit_BinOpNode(self, node):
         res = AnalizeResult()
@@ -1095,7 +1322,20 @@ def main():
             with open(xfile+'.c', 'w') as f:
                 f.write(result.__repr__())
             try:
-                subprocess.Popen(f"gcc {xfile+'.c'} -o {xfile+'.exe'}")
+                subprocess.Popen(f"gcc -O2 {xfile+'.c'} -o {xfile+'.exe'}")
+            except FileNotFoundError:
+                print("gcc is not installed, you need gcc compiler to use this program ;(")
+    
+    elif cmd == 'run':
+        result, error = run(file_name, context)
+        if error: print(error.as_string())
+        else:
+            xfile = file_name.split('.')[0]
+            with open(xfile+'.c', 'w') as f:
+                f.write(result.__repr__())
+            try:
+                subprocess.Popen(f"gcc -O2 {xfile+'.c'} -o {xfile+'.exe'}")
+                subprocess.Popen(f"./{xfile+'.exe'}")
             except FileNotFoundError:
                 print("gcc is not installed, you need gcc compiler to use this program ;(")
     

@@ -1,6 +1,10 @@
-code        : (NEWLINE)* statement (NEWLINE)* (NEWLINE statement)* (NEWLINE)* EOF
+code        : NEWLINE? statement (NEWLINE statement)* NEWLINE? EOF
 
-statement   : expr
+statement   : expr | if-expr
+
+if-expr     : KEYWORD:if atom NEWLINE? statement (NEWLINE statement)* NEWLINE?
+              (KEYWORD:elif atom NEWLINE? statement (NEWLINE statement)* NEWLINE?)*
+              (KEYWORD:else NEWLINE? statement (NEWLINE statement)* NEWLINE?)? KEYWORD:end
 
 expr        : comp_expr ((KEYWORD:and|KEYWORD:or) comp_expr)*
             : identifier
