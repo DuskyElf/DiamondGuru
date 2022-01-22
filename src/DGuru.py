@@ -121,7 +121,11 @@ KEYWORDS = [
     'if',
     'elif',
     'else',
-    'end'
+    'end',
+    'choice',
+    'int',
+    'float',
+    'bool'
 ]
 
 class Token:
@@ -338,6 +342,18 @@ class IfNode:
     
     def __repr__(self):
         return f"if({self.if_value}, {self.elif_values}, {self.else_value})"
+
+class TypeChoiceNode:
+    def __init__(self, identifier, type_, expr):
+        self.identifier = identifier
+        self.type = type_
+        self.expr = expr
+        
+        self.pos_start = self.identifier.pos_start
+        self.pos_end = self.expr.pos_end
+    
+    def __repr__(self):
+        return f"TypeChoice({self.identifier}, {self.type}, {self.expr})"
 
 class BinOpNode:
     def __init__(self, left_node, op_token, right_node):
@@ -581,10 +597,52 @@ class Parser:
         res.register(self.increment())
         return res.success(IfNode(if_expr_value, elif_expr_values, else_expr_value))
     
+    def type_choice(self):
+        res = ParseResult()
+        res.register(self.increment())
+        
+        if self.current_token.type != TT_IDENTIFIER:
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected an identifier name"
+            ))
+        identifier = self.current_token
+        res.register(self.increment())
+        if self.current_token.type != TT_LT:
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected '<'"
+            ))
+        res.register(self.increment())
+        if self.current_token.type == TT_KEYWORD and self.current_token.value == 'int':
+            type_ = self.current_token
+        elif self.current_token.type == TT_KEYWORD and self.current_token.value == 'float':
+            type_ = self.current_token
+        elif self.current_token.type == TT_KEYWORD and self.current_token.value == 'bool':
+            type_ = self.current_token
+        else:
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected 'int' or 'float'"
+            ))
+        res.register(self.increment())
+        if self.current_token.type != TT_GT:
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected '>'"
+            ))
+        res.register(self.increment())
+        expr = res.register(self.expr())
+        if res.error: return res
+        
+        return res.success(TypeChoiceNode(identifier, type_, expr))
+    
     def statement(self):
         res = ParseResult()
         if self.current_token.type == TT_KEYWORD and self.current_token.value == 'if':
             statement = res.register(self.if_expr())
+        elif self.current_token.type == TT_KEYWORD and self.current_token.value == 'choice':
+            statement = res.register(self.type_choice())
         else:
             statement = res.register(self.expr())
         if res.error: return res
@@ -688,15 +746,13 @@ class SymbolNode:
         self.type = self.symbols[self.name].type
         self.symbols[self.name].usage_count += 1
         self.symbol_usage = self.symbols[self.name].usage_count
+        self.type_choice = self.symbols[self.name].type_choice
     
     def __repr__(self):
         self.symbol = self.symbols[self.name]
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_'
         if isinstance(self.type, list):
-            result = '('
-            for i, type_ in enumerate(self.type):
-                result += f'{self.symbol.name}_type=={i}? (*({type_}*)identifiers[{self.symbol.identifier}]): '
-            result += '0)'
+            result = f'*({self.type_choice}*)identifiers[{self.symbol.identifier}]'
         else: result = f'*({self.type}*)identifiers[{self.symbol.identifier}]'
         if self.symbol_usage == self.symbol.usage_count:
             return result + f'\\*after:free(identifiers[{self.symbol.identifier}])*\\'
@@ -709,9 +765,6 @@ class SymbolAssignNode:
         self.node = node
         self.type_change = type_change
         self.type = node.type
-        if isinstance(self.symbols[self.name].type, list):
-            self.symbol_type = self.symbols[self.name].type.copy()
-        else: self.symbol_type = self.symbols[self.name].type
         self.assign_count = self.symbols[self.name].assign_count
         self.usage_till_now = self.symbols[self.name].usage_count
     
@@ -723,11 +776,13 @@ class SymbolAssignNode:
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_ = {self.node}'
         
         if self.type_change:
-            if isinstance(self.symbol_type, list):
-                return f'*({self.symbol_type[-1]}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.symbol_type[-1]}));after:{self.symbol.name}_type = {len(self.symbol_type)-1};pre-before:int {self.symbol.name}_type = 0*\\'
+            if isinstance(self.symbol.type, list):
+                return f'*({self.node.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.node.type}));after:{self.symbol.name}_type = {self.symbol.type.index(self.node.type)}*\\'
             return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.type}))*\\'
         
         if self.assign_count == 1:
+            if isinstance(self.symbol.type, list):
+                return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = malloc(sizeof({self.type}));before:int {self.symbol.name}_type = {self.symbol.type.index(self.type)}*\\'
             return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = malloc(sizeof({self.type}))*\\'
         return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}'
 
@@ -874,7 +929,7 @@ class NotNode:
         return f'!({self.node})'
 
 class CIfNode:
-    def __init__(self, if_value, elif_values, else_value):
+    def __init__(self, if_value, elif_values=[], else_value=None):
         self.if_value = if_value
         self.elif_values = elif_values
         self.else_value = else_value
@@ -1018,15 +1073,17 @@ class Symbol:
         self.assign_count = 0
         self.usage_count = 0
         self.manual_static = False
+        self.type_choice = None
 
 class Identifier(Symbol):
-    def __init__(self, name, type_, identifier, start_assign_count, start_usage_count):
+    def __init__(self, name, type_, identifier, start_assign_count, start_usage_count, type_choice):
         super().__init__(name, type_)
         self.identifier = identifier
         self.first_type = self.type
         self.assign_count = start_assign_count
         self.usage_count = start_usage_count
         self.if_thingy = 0
+        self.type_choice = type_choice
 
 class Variable(Symbol):
     def __init__(self, name, type_, manual_static):
@@ -1036,7 +1093,7 @@ class Variable(Symbol):
     def convert_to_identifier(self, identifier):
         if self.manual_static:
             return
-        return Identifier(self.name, self.type, identifier, self.assign_count, self.usage_count)
+        return Identifier(self.name, self.type, identifier, self.assign_count, self.usage_count, self.type_choice)
 
 ### SymbolTable ###
 class SymbolTable:
@@ -1087,15 +1144,18 @@ class SymbolTable:
                 libraries.add('#include<stdlib.h>\n')
             if self.branchs:
                 if self.branchs[-1] == SymbolTable.BRANCH_IF:
-                    if isinstance(symbol.type, list): symbol.type.append(value_node.type)
+                    if isinstance(symbol.type, list):
+                        if value_node.type not in symbol.type:
+                            symbol.type.append(value_node.type)
                     else: symbol.type = [symbol.type, value_node.type]
                     symbol.if_thingy == self.branch_count
                 else:
                     if isinstance(symbol.type, list):
-                        if symbol.if_thingy +1 == self.branch_count:
-                            symbol.type[0] = value_node.type
-                        else: symbol.type.append(value_node.type)
-                    else:  symbol.type = [symbol.type, value_node.type]
+                        if value_node.type not in symbol.type:
+                            if symbol.if_thingy +1 == self.branch_count:
+                                symbol.type[0] = value_node.type
+                            else: symbol.type.append(value_node.type)
+                    else: symbol.type = [symbol.type, value_node.type]
             else:
                 symbol.type = value_node.type
             symbol.assign_count += 1
@@ -1112,6 +1172,30 @@ class SymbolTable:
         symbol.assign_count += 1
         return res.success(SymbolAssignNode(self.symbols, name, value_node))
 
+    def symbol_type_choice(self, name, type_, node):
+        type_map = {'int':'int', 'bool':'_Bool', 'float':'double'}
+        
+        res = AnalizeResult()
+        if name not in self.symbols.keys():
+            return res.failure(
+                NameError_(node.pos_start, node.pos_end, f"Name '{name}' is not defined")
+            )
+        symbol = self.symbols[name]
+        if not isinstance(symbol.type, list):
+            return res.failure(
+                TypeError_(node.pos_start, node.pos_end, "Can't type choice on single branch variables")
+            )
+        if type_map[type_.value] not in symbol.type:
+            print(symbol.type)
+            return res.failure(
+                TypeError_(type_.pos_start, type_.pos_end, f"Identifier '{name}' does not have '{type_.value}' type branch")
+            )
+        self.symbols[name].type_choice = type_map[type_.value]
+        return res.success(SymbolNode(self.symbols, name))
+    
+    def symbol_type_choice_end(self, name):
+        self.symbols[name].type_choice = None
+    
     def start_if_branch(self):
         self.branch_count += 1
         self.branchs.append(SymbolTable.BRANCH_IF)
@@ -1196,6 +1280,21 @@ class Analizer:
                 if res.error: return res
             self.symbol_table.end_branch()
         return res.success(CIfNode(if_value_node, elif_value_nodes, else_value_node))
+    
+    def visit_TypeChoiceNode(self, node):
+        map_type = {'int':'int', 'bool':'_Bool', 'float':'double'}
+        res = AnalizeResult()
+        symbol = res.register(self.symbol_table.symbol_type_choice(node.identifier.value, node.type, node))
+        if res.error: return res
+        expr = res.register(self.visit(node.expr))
+        if res.error: return res
+        self.symbol_table.symbol_type_choice_end(node.identifier.value)
+        return res.success(CIfNode([
+            EqualNode(
+                f'{symbol.name}_type', 
+                IntNode(symbol.type.index(map_type[node.type.value]))
+            ), [expr]
+        ]))
     
     def visit_BinOpNode(self, node):
         res = AnalizeResult()

@@ -1,6 +1,8 @@
 code        : NEWLINE? statement (NEWLINE statement)* NEWLINE? EOF
 
-statement   : expr | if-expr
+statement   : expr | if-expr | type-choice
+
+type-choice : KEYWORD:choice IDENTIFIER LT (KEYWORD:int|KEYWORD:FLOAT) GT expr
 
 if-expr     : KEYWORD:if atom NEWLINE? statement (NEWLINE statement)* NEWLINE?
               (KEYWORD:elif atom NEWLINE? statement (NEWLINE statement)* NEWLINE?)*
