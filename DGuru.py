@@ -1121,11 +1121,6 @@ class SymbolTable:
     def symbol_get(self, name, node):
         res = AnalizeResult()
         if name in self.symbols.keys():
-            if isinstance(self.symbols[name].type, list) and self.symbols[name].type_choice is None:
-                return res.failure(TypeError_(
-                    node.pos_start, node.pos_end,
-                    "Can't use a branch type variable without a type choice"
-                ))
             return res.success(SymbolNode(self.symbols, name))
         return res.failure(
             NameError_(node.pos_start, node.pos_end, f"Name '{name}' is not defined")
