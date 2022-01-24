@@ -2,6 +2,8 @@ import sys
 import subprocess
 import string
 
+from numpy import isin
+
 ### CONSTANTS ###
 DIGITS = '0123456789'
 LETTERS = string.ascii_letters
@@ -753,17 +755,14 @@ class SymbolNode:
         self.symbols[self.name].usage_count += 1
         self.symbol_usage = self.symbols[self.name].usage_count
         self.type_choice = self.symbols[self.name].type_choice
-        if isinstance(self.type, list):
+        if isinstance(self.type, list) and self.type_choice is not None:
             self.type = self.type_choice
     
     def __repr__(self):
         self.symbol = self.symbols[self.name]
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_'
         if isinstance(self.type, list):
-            if self.type_choice is None:
-                result = f'identifiers[{self.symbol.identifier}]'
-            else:
-                result = f'*({self.type_choice}*)identifiers[{self.symbol.identifier}]'
+            result = f'identifiers[{self.symbol.identifier}]'
         else: result = f'*({self.type}*)identifiers[{self.symbol.identifier}]'
         if self.symbol_usage == self.symbol.usage_count:
             return result + f'\\*after:free(identifiers[{self.symbol.identifier}])*\\'
@@ -1184,24 +1183,27 @@ class SymbolTable:
         symbol.assign_count += 1
         return res.success(SymbolAssignNode(self.symbols, name, value_node))
 
-    def symbol_type_choice(self, name, type_, node):
+    def symbol_type_choice(self, name, type_, node=None):
         type_map = {'int':'int', 'bool':'_Bool', 'float':'double'}
         
         res = AnalizeResult()
-        if name not in self.symbols.keys():
-            return res.failure(
-                NameError_(node.pos_start, node.pos_end, f"Name '{name}' is not defined")
-            )
-        symbol = self.symbols[name]
-        if not isinstance(symbol.type, list):
-            return res.failure(
-                TypeError_(node.pos_start, node.pos_end, "Can't type choice on single branch variables")
-            )
-        if type_map[type_.value] not in symbol.type:
-            return res.failure(
-                TypeError_(type_.pos_start, type_.pos_end, f"Identifier '{name}' does not have '{type_.value}' type branch")
-            )
-        self.symbols[name].type_choice = type_map[type_.value]
+        if node is not None:
+            if name not in self.symbols.keys():
+                return res.failure(
+                    NameError_(node.pos_start, node.pos_end, f"Name '{name}' is not defined")
+                )
+            symbol = self.symbols[name]
+            if not isinstance(symbol.type, list):
+                return res.failure(
+                    TypeError_(node.pos_start, node.pos_end, "Can't type choice on single branch variables")
+                )
+            if type_map[type_.value] not in symbol.type:
+                return res.failure(
+                    TypeError_(type_.pos_start, type_.pos_end, f"Identifier '{name}' does not have '{type_.value}' type branch")
+                )
+            self.symbols[name].type_choice = type_map[type_.value]
+            return res.success(SymbolNode(self.symbols, name))
+        self.symbols[name].type_choice = type_
         return res.success(SymbolNode(self.symbols, name))
     
     def symbol_type_choice_end(self, name):
@@ -1249,6 +1251,45 @@ class Analizer:
         res = AnalizeResult()
         value_node = res.register(self.visit(node.value_node))
         if res.error: return res
+        if isinstance(value_node.type, list):
+            if_expr = []
+            elif_expr = []
+            symbol = res.register(self.symbol_table.symbol_get(value_node.name, node))
+            for i, value_type in enumerate(value_node.type):
+                if not i:
+                    self.symbol_table.start_if_branch()
+                    if_expr.append(
+                        EqualNode(
+                            f'{symbol.name}_type', 
+                            IntNode(symbol.type.index(value_type))))
+                    res.register(self.symbol_table.symbol_type_choice(value_node.name, value_type))
+                    if_expr.append([res.register(self.symbol_table.symbol_assign(
+                            node.id_name_token.value,
+                            node, res.register(self.visit(node.value_node)),
+                            node.manual_static,
+                            self.libraries))])
+                    self.symbol_table.end_branch()
+                else:
+                    tmpelif_expr = []
+                    self.symbol_table.start_else_branch()
+                    self.symbol_table.start_if_branch()
+                    tmpelif_expr.append(
+                        EqualNode(
+                            f'{symbol.name}_type', 
+                            IntNode(symbol.type.index(value_type))))
+                    res.register(self.symbol_table.symbol_type_choice(value_node.name, value_type))
+                    tmpelif_expr.append([res.register(self.symbol_table.symbol_assign(
+                            node.id_name_token.value,
+                            node, res.register(self.visit(node.value_node)),
+                            node.manual_static,
+                            self.libraries))])
+                    elif_expr.append(tmpelif_expr)
+                    self.symbol_table.end_branch()
+                    self.symbol_table.end_branch()
+                if res.error: return res
+                self.symbol_table.symbol_type_choice_end(value_node.name)
+            return res.success(CIfNode(if_expr, elif_expr))
+        
         name = node.id_name_token.value
         answer = self.symbol_table.symbol_assign(name, node, value_node, node.manual_static, self.libraries)
         return answer
@@ -1295,17 +1336,19 @@ class Analizer:
     def visit_TypeChoiceNode(self, node):
         map_type = {'int':'int', 'bool':'_Bool', 'float':'double'}
         res = AnalizeResult()
-        symbol = res.register(self.symbol_table.symbol_type_choice(node.identifier.value, node.type, node))
+        symbol = res.register(self.symbol_table.symbol_get(node.identifier.value, node))
         if res.error: return res
-        expr = res.register(self.visit(node.expr))
-        if res.error: return res
-        self.symbol_table.symbol_type_choice_end(node.identifier.value)
-        return res.success(CIfNode([
-            EqualNode(
+        if_expr = []
+        if_expr.append(EqualNode(
                 f'{symbol.name}_type', 
                 IntNode(symbol.type.index(map_type[node.type.value]))
-            ), [expr]
-        ]))
+            ))
+        res.register(self.symbol_table.symbol_type_choice(node.identifier.value, node.type, node))
+        expr = res.register(self.visit(node.expr))
+        if res.error: return res
+        if_expr.append([expr])
+        self.symbol_table.symbol_type_choice_end(node.identifier.value)
+        return res.success(CIfNode(if_expr))
     
     def visit_BinOpNode(self, node):
         res = AnalizeResult()

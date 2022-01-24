@@ -1,8 +1,5 @@
 #custom
-example.dg
-example.c
-example.exe
-a.exe
+example.*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
