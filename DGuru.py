@@ -748,9 +748,10 @@ class FalseNode:
         return f'{self.value}'
 
 class SymbolNode:
-    def __init__(self, symbols, name):
+    def __init__(self, symbols, name, branch):
         self.symbols = symbols
         self.name = name
+        self.branch = branch.copy()
         self.type = self.symbols[self.name].type
         self.symbols[self.name].usage_count += 1
         self.symbol_usage = self.symbols[self.name].usage_count
@@ -765,15 +766,17 @@ class SymbolNode:
             result = f'identifiers[{self.symbol.identifier}]'
         else: result = f'*({self.type}*)identifiers[{self.symbol.identifier}]'
         if self.symbol_usage == self.symbol.usage_count:
+            if self.branch: return result + f'\\*late-after:free(identifiers[{self.symbol.identifier}])*\\'
             return result + f'\\*after:free(identifiers[{self.symbol.identifier}])*\\'
         return result
 
 class SymbolAssignNode:
-    def __init__(self, symbols, name, node, type_change=False):
+    def __init__(self, symbols, name, node, type_change=False, branch_init=False):
         self.symbols = symbols
         self.name = name
         self.node = node
         self.type_change = type_change
+        self.branch_init = branch_init
         self.type = node.type
         self.symbol_type = self.symbols[self.name].type
         self.assign_count = self.symbols[self.name].assign_count
@@ -785,6 +788,9 @@ class SymbolAssignNode:
             return f'{self.node}'
         
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_ = {self.node}'
+        
+        if self.branch_init:
+            return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.type}));after:{self.symbol.name}_type = {self.symbol.type.index(self.node.type)};pre-before:int {self.symbol.name}_type = 0;pre-before:identifiers[{self.symbol.identifier}] = 0*\\'
         
         if self.type_change:
             if isinstance(self.symbol_type, list):
@@ -959,6 +965,8 @@ class CIfNode:
                     result = f'{result};\n{line}'
                 if head == 'pre-before':
                     result += f'\\*before:{line}*\\'
+                if head == 'late-after':
+                    result += f'\\*after:{line}*\\'
         result += ';\n'
         return result
     
@@ -1120,7 +1128,7 @@ class SymbolTable:
     def symbol_get(self, name, node):
         res = AnalizeResult()
         if name in self.symbols.keys():
-            return res.success(SymbolNode(self.symbols, name))
+            return res.success(SymbolNode(self.symbols, name, self.branchs))
         return res.failure(
             NameError_(node.pos_start, node.pos_end, f"Name '{name}' is not defined")
         )
@@ -1163,9 +1171,9 @@ class SymbolTable:
                 else:
                     if isinstance(symbol.type, list):
                         if value_node.type not in symbol.type:
-                            if symbol.if_thingy +1 == self.branch_count:
-                                symbol.type[0] = value_node.type
-                            else: symbol.type.append(value_node.type)
+                            symbol.type.append(value_node.type)
+                        if symbol.if_thingy +1 == self.branch_count:
+                            symbol.type[0] = value_node.type
                     else: symbol.type = [symbol.type, value_node.type]
             else:
                 symbol.type = value_node.type
@@ -1173,17 +1181,25 @@ class SymbolTable:
             return res.success(SymbolAssignNode(self.symbols, name, value_node, type_change=True))
         
         if self.branchs:
-            return res.failure(NameError_(
-                node.pos_start, node.pos_end,
-                "Can't initiate an identifier inside a branch"
-            ))
+            symbol = Identifier(name, None, self.identifier_count, 0, 0, None)
+            self.symbols[name] = symbol
+            self.identifier_count += 1
+            libraries.add('#include<stdlib.h>\n')
+            if self.branchs[-1] == SymbolTable.BRANCH_IF:
+                symbol.type = [symbol.type, value_node.type]
+                symbol.if_thingy == self.branch_count
+            else:
+                symbol.type = [symbol.type, value_node.type]
+            symbol.assign_count += 1
+            return res.success(SymbolAssignNode(self.symbols, name, value_node, branch_init=True))
+        
         symbol = Variable(name, value_node.type, manual_static)
         self.symbols[name] = symbol
         self.global_variables.append(symbol)
         symbol.assign_count += 1
         return res.success(SymbolAssignNode(self.symbols, name, value_node))
-
-    def symbol_type_choice(self, name, type_, node=None):
+    
+    def symbol_type_choice(self, name, type_, node=None, do=True):
         type_map = {'int':'int', 'bool':'_Bool', 'float':'double'}
         
         res = AnalizeResult()
@@ -1201,16 +1217,22 @@ class SymbolTable:
                 return res.failure(
                     TypeError_(type_.pos_start, type_.pos_end, f"Identifier '{name}' does not have '{type_.value}' type branch")
                 )
-            self.symbols[name].type_choice = type_map[type_.value]
-            return res.success(SymbolNode(self.symbols, name))
-        self.symbols[name].type_choice = type_
-        return res.success(SymbolNode(self.symbols, name))
+            if do:
+                self.symbols[name].type_choice = type_map[type_.value]
+                return res.success(SymbolNode(self.symbols, name, self.branchs))
+        if do:
+            self.symbols[name].type_choice = type_
+            return res.success(SymbolNode(self.symbols, name, self.branchs))
+        return res.success(None)
     
     def symbol_type_choice_end(self, name):
         self.symbols[name].type_choice = None
     
     def start_if_branch(self):
         self.branch_count += 1
+        self.branchs.append(SymbolTable.BRANCH_IF)
+    
+    def start_elif_branch(self):
         self.branchs.append(SymbolTable.BRANCH_IF)
     
     def start_else_branch(self):
@@ -1254,10 +1276,12 @@ class Analizer:
         if isinstance(value_node.type, list):
             if_expr = []
             elif_expr = []
-            symbol = res.register(self.symbol_table.symbol_get(value_node.name, node))
+            if None in value_node.type: value_node.type.remove(None)
             for i, value_type in enumerate(value_node.type):
                 if not i:
                     self.symbol_table.start_if_branch()
+                    symbol = res.register(self.symbol_table.symbol_get(value_node.name, node))
+                    if res.error: return res
                     if_expr.append(
                         EqualNode(
                             f'{symbol.name}_type', 
@@ -1271,8 +1295,9 @@ class Analizer:
                     self.symbol_table.end_branch()
                 else:
                     tmpelif_expr = []
-                    self.symbol_table.start_else_branch()
-                    self.symbol_table.start_if_branch()
+                    self.symbol_table.start_elif_branch()
+                    symbol = res.register(self.symbol_table.symbol_get(value_node.name, node))
+                    if res.error: return res
                     tmpelif_expr.append(
                         EqualNode(
                             f'{symbol.name}_type', 
@@ -1284,7 +1309,6 @@ class Analizer:
                             node.manual_static,
                             self.libraries))])
                     elif_expr.append(tmpelif_expr)
-                    self.symbol_table.end_branch()
                     self.symbol_table.end_branch()
                 if res.error: return res
                 self.symbol_table.symbol_type_choice_end(value_node.name)
@@ -1309,8 +1333,7 @@ class Analizer:
         self.symbol_table.end_branch()
         elif_value_nodes = []
         for elif_value in node.elif_values:
-            self.symbol_table.start_else_branch()
-            self.symbol_table.start_if_branch()
+            self.symbol_table.start_elif_branch()
             elif_expr, elif_statements = elif_value
             elif_value_node = []
             elif_value_node.append(res.register(self.visit(elif_expr)))
@@ -1321,7 +1344,6 @@ class Analizer:
                 if res.error: return res
             elif_value_node.append(elif_statement_nodes)
             elif_value_nodes.append(elif_value_node)
-            self.symbol_table.end_branch()
             self.symbol_table.end_branch()
         
         else_value_node = []
@@ -1339,6 +1361,8 @@ class Analizer:
         symbol = res.register(self.symbol_table.symbol_get(node.identifier.value, node))
         if res.error: return res
         if_expr = []
+        res.register(self.symbol_table.symbol_type_choice(node.identifier.value, node.type, node, do=False))
+        if res.error: return res
         if_expr.append(EqualNode(
                 f'{symbol.name}_type', 
                 IntNode(symbol.type.index(map_type[node.type.value]))
