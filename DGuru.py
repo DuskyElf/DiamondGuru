@@ -2,8 +2,6 @@ import sys
 import subprocess
 import string
 
-from numpy import isin
-
 ### CONSTANTS ###
 DIGITS = '0123456789'
 LETTERS = string.ascii_letters
@@ -1092,16 +1090,19 @@ class Symbol:
         self.assign_count = 0
         self.usage_count = 0
         self.manual_static = False
+        self.if_thingy = 0
+        self.is_branching = False
         self.type_choice = None
 
 class Identifier(Symbol):
-    def __init__(self, name, type_, identifier, start_assign_count, start_usage_count, type_choice):
+    def __init__(self, name, type_, identifier, start_assign_count=0, start_usage_count=0, type_choice=None, if_thingy=0, is_branching=False):
         super().__init__(name, type_)
         self.identifier = identifier
         self.first_type = self.type
         self.assign_count = start_assign_count
         self.usage_count = start_usage_count
-        self.if_thingy = 0
+        self.if_thingy = if_thingy
+        self.is_branching = is_branching
         self.type_choice = type_choice
 
 class Variable(Symbol):
@@ -1112,7 +1113,7 @@ class Variable(Symbol):
     def convert_to_identifier(self, identifier):
         if self.manual_static:
             return
-        return Identifier(self.name, self.type, identifier, self.assign_count, self.usage_count, self.type_choice)
+        return Identifier(self.name, self.type, identifier, self.assign_count, self.usage_count, self.type_choice, self.if_thingy, self.is_branching)
 
 ### SymbolTable ###
 class SymbolTable:
@@ -1143,8 +1144,7 @@ class SymbolTable:
                     TypeError_(node.manual_static_token.pos_start, node.manual_static_token.pos_end,
                                "Can't make a dynamic variable static"
                 ))
-            
-            if value_node.type == symbol.type:
+            if value_node.type == symbol.type and not self.branchs:
                 if manual_static: symbol.manual_static = True
                 symbol.assign_count += 1
                 return res.success(SymbolAssignNode(self.symbols, name, value_node))
@@ -1155,7 +1155,7 @@ class SymbolTable:
                     f"Can't change static variables's type"
                 ))
             
-            if isinstance(symbol, Variable):
+            if isinstance(symbol, Variable) and value_node.type != symbol.type:
                 self.global_variables.remove(symbol)
                 symbol = symbol.convert_to_identifier(self.identifier_count)
                 self.symbols[name] = symbol
@@ -1163,25 +1163,33 @@ class SymbolTable:
                 libraries.add('#include<stdlib.h>\n')
             if self.branchs:
                 if self.branchs[-1] == SymbolTable.BRANCH_IF:
-                    if isinstance(symbol.type, list):
-                        if value_node.type not in symbol.type:
-                            symbol.type.append(value_node.type)
-                    else: symbol.type = [symbol.type, value_node.type]
-                    symbol.if_thingy == self.branch_count
+                    if value_node.type != symbol.type:
+                        if isinstance(symbol.type, list):
+                            if value_node.type not in symbol.type:
+                                symbol.type.append(value_node.type)
+                            if value_node.type == symbol.type[0]: symbol.is_branching = True
+                        else:
+                            symbol.if_thingy = symbol.type
+                            symbol.type = [symbol.type, value_node.type]
+                    else:
+                        symbol.is_branching = True
+                        symbol.if_thingy = symbol.type
                 else:
                     if isinstance(symbol.type, list):
-                        if value_node.type not in symbol.type:
-                            symbol.type.append(value_node.type)
-                        if symbol.if_thingy +1 == self.branch_count:
-                            symbol.type[0] = value_node.type
-                    else: symbol.type = [symbol.type, value_node.type]
+                        if value_node.type != symbol.if_thingy:
+                            if value_node.type not in symbol.type:
+                                symbol.type[0] = value_node.type
+                            elif not symbol.is_branching: symbol.type.remove(symbol.type[0])
+                    else:
+                        symbol.type = [symbol.type, value_node.type]
             else:
                 symbol.type = value_node.type
+            if len(set(symbol.type)) == 1: symbol.type = symbol.type[0]
             symbol.assign_count += 1
             return res.success(SymbolAssignNode(self.symbols, name, value_node, type_change=True))
         
         if self.branchs:
-            symbol = Identifier(name, None, self.identifier_count, 0, 0, None)
+            symbol = Identifier(name, None, self.identifier_count)
             self.symbols[name] = symbol
             self.identifier_count += 1
             libraries.add('#include<stdlib.h>\n')
@@ -1199,7 +1207,7 @@ class SymbolTable:
         symbol.assign_count += 1
         return res.success(SymbolAssignNode(self.symbols, name, value_node))
     
-    def symbol_type_choice(self, name, type_, node=None, do=True):
+    def symbol_type_choice(self, name, type_, node=None):
         type_map = {'int':'int', 'bool':'_Bool', 'float':'double'}
         
         res = AnalizeResult()
@@ -1217,13 +1225,10 @@ class SymbolTable:
                 return res.failure(
                     TypeError_(type_.pos_start, type_.pos_end, f"Identifier '{name}' does not have '{type_.value}' type branch")
                 )
-            if do:
-                self.symbols[name].type_choice = type_map[type_.value]
-                return res.success(SymbolNode(self.symbols, name, self.branchs))
-        if do:
-            self.symbols[name].type_choice = type_
+            self.symbols[name].type_choice = type_map[type_.value]
             return res.success(SymbolNode(self.symbols, name, self.branchs))
-        return res.success(None)
+        self.symbols[name].type_choice = type_
+        return res.success(SymbolNode(self.symbols, name, self.branchs))
     
     def symbol_type_choice_end(self, name):
         self.symbols[name].type_choice = None
@@ -1361,17 +1366,18 @@ class Analizer:
         symbol = res.register(self.symbol_table.symbol_get(node.identifier.value, node))
         if res.error: return res
         if_expr = []
-        res.register(self.symbol_table.symbol_type_choice(node.identifier.value, node.type, node, do=False))
+        res.register(self.symbol_table.symbol_type_choice(node.identifier.value, node.type, node))
         if res.error: return res
         if_expr.append(EqualNode(
                 f'{symbol.name}_type', 
                 IntNode(symbol.type.index(map_type[node.type.value]))
             ))
-        res.register(self.symbol_table.symbol_type_choice(node.identifier.value, node.type, node))
+        self.symbol_table.start_if_branch()
         expr = res.register(self.visit(node.expr))
         if res.error: return res
         if_expr.append([expr])
         self.symbol_table.symbol_type_choice_end(node.identifier.value)
+        self.symbol_table.end_branch()
         return res.success(CIfNode(if_expr))
     
     def visit_BinOpNode(self, node):
