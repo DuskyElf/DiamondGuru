@@ -25,5 +25,5 @@ factor      : (PLUS|MINUS) factor
 
 power       : atom (POW factor)*
 
-atom        : INT|FLOAT|IDENTIFIER|KEYWORD:True|KEYWORD:False
+atom        : INT|FLOAT|STRING|IDENTIFIER|KEYWORD:True|KEYWORD:False
             : LPAREN expr RPAREN

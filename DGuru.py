@@ -92,6 +92,7 @@ class Position:
 
 TT_INT          = 'INT'
 TT_FLOAT        = 'FLOAT'
+TT_STRING       = 'STRING'
 TT_IDENTIFIER   = 'IDENTIFIER'
 TT_KEYWORD      = 'KEYWORD'
 TT_PLUS         = 'PLUS'
@@ -170,6 +171,10 @@ class Lexer:
                 tokens.append(self.define_number())
             elif self.current_char in LETTERS:
                 tokens.append(self.make_identifier())
+            elif self.current_char == '"':
+                tok, error = self.make_string()
+                if error: return [], error
+                tokens.append(tok)
             elif self.current_char == '+':
                 tokens.append(Token(TT_PLUS, pos_start=self.pos))
                 self.increment()
@@ -236,6 +241,20 @@ class Lexer:
         else:
             return Token(TT_FLOAT, float(num_str), pos_start, self.pos)
     
+    def make_string(self):
+        string = ''
+        pos_start = self.pos.copy()
+        self.increment()
+        
+        while self.current_char != None and self.current_char != '"':
+            if self.current_char in '\n':
+                return None, ExpectedCharError(pos_start, self.pos, "Expected ' \" ' ending")
+            string += self.current_char
+            self.increment()
+        
+        self.increment()
+        return Token(TT_STRING, string, pos_start, self.pos), None
+    
     def make_identifier(self):
         id_str = ''
         pos_start = self.pos.copy()
@@ -301,6 +320,16 @@ class NumberNode:
     
     def __repr__(self):
         return f"{self.token.value}"
+
+class StringNode:
+    def __init__(self, token):
+        self.token = token
+        
+        self.pos_start = self.token.pos_start
+        self.pos_end = self.token.pos_end
+    
+    def __repr__(self):
+        return f'"{self.token.value}"'
 
 class KeywordValueNode:
     def __init__(self, token):
@@ -442,6 +471,10 @@ class Parser:
         if tok.type in (TT_INT, TT_FLOAT):
             res.register(self.increment())
             return res.success(NumberNode(tok))
+        
+        if tok.type in TT_STRING:
+            res.register(self.increment())
+            return res.success(StringNode(tok))
         
         elif tok.type == TT_IDENTIFIER:
             res.register(self.increment())
@@ -745,6 +778,15 @@ class FalseNode:
     def __repr__(self):
         return f'{self.value}'
 
+class CStringNode:
+    def __init__(self, value):
+        self.value = value
+        self.type = 'str'
+        self.str_length = len(eval(f'"{value}"'))+1
+    
+    def __repr__(self):
+        return f'"{self.value}"'
+
 class SymbolNode:
     def __init__(self, symbols, name, branch):
         self.symbols = symbols
@@ -756,11 +798,13 @@ class SymbolNode:
         self.type_choice = self.symbols[self.name].type_choice
         if isinstance(self.type, list) and self.type_choice is not None:
             self.type = self.type_choice
+        if self.type == 'str':
+            self.str_length = self.symbols[name].str_length
     
     def __repr__(self):
         self.symbol = self.symbols[self.name]
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_'
-        if isinstance(self.type, list):
+        if isinstance(self.type, list) or self.type=='str':
             result = f'identifiers[{self.symbol.identifier}]'
         else: result = f'*({self.type}*)identifiers[{self.symbol.identifier}]'
         if self.symbol_usage == self.symbol.usage_count:
@@ -779,6 +823,7 @@ class SymbolAssignNode:
         self.symbol_type = self.symbols[self.name].type
         self.assign_count = self.symbols[self.name].assign_count
         self.usage_till_now = self.symbols[self.name].usage_count
+        if self.type == 'str': self.symbols[self.name].str_length = node.str_length
     
     def __repr__(self):
         self.symbol = self.symbols[self.name]
@@ -787,19 +832,27 @@ class SymbolAssignNode:
         
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_ = {self.node}'
         
-        if self.branch_init:
-            return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.type}));after:{self.symbol.name}_type = {self.symbol.type.index(self.node.type)};pre-before:int {self.symbol.name}_type = 0;pre-before:identifiers[{self.symbol.identifier}] = 0*\\'
+        if self.type == 'str':
+            core_name = f'strcpy(identifiers[{self.symbol.identifier}], {self.node})'
+            core_size = f'sizeof(char)*{self.node.str_length}'
+            self.type_change = True
+        else:
+            core_name = f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}'
+            core_size = f'sizeof({self.type})'
         
-        if self.type_change:
-            if isinstance(self.symbol_type, list):
-                return f'*({self.node.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.node.type}));after:{self.symbol.name}_type = {self.symbol.type.index(self.node.type)}*\\'
-            return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], sizeof({self.type}))*\\'
+        if self.branch_init:
+            return f'{core_name}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], {core_size});after:{self.symbol.name}_type = {self.symbol.type.index(self.node.type)};pre-before:int {self.symbol.name}_type = 0;pre-before:identifiers[{self.symbol.identifier}] = 0*\\'
         
         if self.assign_count == 1:
             if isinstance(self.symbol.type, list):
-                return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = malloc(sizeof({self.type}));before:int {self.symbol.name}_type = {self.symbol_type.index(self.type)}*\\'
-            return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}\\*before:identifiers[{self.symbol.identifier}] = malloc(sizeof({self.type}))*\\'
-        return f'*({self.type}*)identifiers[{self.symbol.identifier}] = {self.node}'
+                return f'{core_name}\\*before:identifiers[{self.symbol.identifier}] = malloc({core_size});before:int {self.symbol.name}_type = {self.symbol_type.index(self.type)}*\\'
+            return f'{core_name}\\*before:identifiers[{self.symbol.identifier}] = malloc({core_size})*\\'
+        
+        if self.type_change:
+            if isinstance(self.symbol_type, list):
+                return f'{core_name}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], {core_size});after:{self.symbol.name}_type = {self.symbol.type.index(self.node.type)}*\\'
+            return f'{core_name}\\*before:identifiers[{self.symbol.identifier}] = realloc(identifiers[{self.symbol.identifier}], {core_size})*\\'
+        return core_name
 
 class NegateNode:
     def __init__(self, node):
@@ -1201,9 +1254,15 @@ class SymbolTable:
             symbol.assign_count += 1
             return res.success(SymbolAssignNode(self.symbols, name, value_node, branch_init=True))
         
-        symbol = Variable(name, value_node.type, manual_static)
+        if value_node.type == 'str':
+            libraries.add('#include<stdlib.h>\n')
+            libraries.add('#include<string.h>\n')
+            symbol = Identifier(name, value_node.type, self.identifier_count)
+            self.identifier_count += 1
+        else:
+            symbol = Variable(name, value_node.type, manual_static)
+            self.global_variables.append(symbol)
         self.symbols[name] = symbol
-        self.global_variables.append(symbol)
         symbol.assign_count += 1
         return res.success(SymbolAssignNode(self.symbols, name, value_node))
     
@@ -1263,6 +1322,9 @@ class Analizer:
         res = AnalizeResult()
         if type(node.token.value) is int: return res.success(IntNode(node.token.value))
         if type(node.token.value) is float: return res.success(DoubleNode(node.token.value))
+    
+    def visit_StringNode(self, node):
+        return AnalizeResult().success(CStringNode(node.token.value))
     
     def visit_KeywordValueNode(self, node):
         res = AnalizeResult()
