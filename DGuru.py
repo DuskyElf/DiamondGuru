@@ -1252,6 +1252,9 @@ class SymbolTable:
             else:
                 symbol.type = [symbol.type, value_node.type]
             symbol.assign_count += 1
+            if value_node.type == 'str':
+                libraries.add('#include<stdlib.h>\n')
+                libraries.add('#include<string.h>\n')
             return res.success(SymbolAssignNode(self.symbols, name, value_node, branch_init=True))
         
         if value_node.type == 'str':
