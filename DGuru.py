@@ -122,6 +122,10 @@ KEYWORDS = [
     'if',
     'elif',
     'else',
+    'for',
+    'to',
+    'step',
+    'while',
     'end',
     'choice',
     'int',
@@ -386,6 +390,33 @@ class TypeChoiceNode:
     
     def __repr__(self):
         return f"TypeChoice({self.identifier}, {self.type}, {self.expr})"
+
+class ForNode:
+    def __init__(self, for_keyword_token, var_name_token, start_value_node, end_value_node, step_value_node, statements):
+        self.for_keyword_token = for_keyword_token
+        self.var_name_token = var_name_token
+        self.start_value_node = start_value_node
+        self.end_value_node = end_value_node
+        self.step_value_node = step_value_node
+        self.statements = statements
+        
+        self.pos_start = self.for_keyword_token.pos_start
+        self.pos_end = self.step_value_node.pos_end if self.step_value_node else self.end_value_node.pos_end
+
+    def __repr__(self):
+        return f'for({self.var_name_token}={self.start_value_node, self.end_value_node}, {self.step_value_node}, {self.statements})'
+
+class WhileNode:
+    def __init__(self, while_keyword_token, condition_node, statements):
+        self.while_keyword_token = while_keyword_token
+        self.condition_node = condition_node
+        self.statements = statements
+        
+        self.pos_start = self.while_keyword_token.pos_start
+        self.pos_end = self.condition_node.pos_end
+    
+    def __repr__(self):
+        return f'while({self.conditioin_node}, {self.statements})'
 
 class BinOpNode:
     def __init__(self, left_node, op_token, right_node):
@@ -676,12 +707,86 @@ class Parser:
         
         return res.success(TypeChoiceNode(identifier, type_, expr))
     
+    def for_expr(self):
+        res = ParseResult()
+        for_keyword_token = self.current_token
+        res.register(self.increment())
+        
+        if self.current_token.type != TT_IDENTIFIER:
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected identifier (after 'for')"
+            ))
+        var_name = self.current_token
+        res.register(self.increment())
+        
+        if self.current_token.type != TT_EQ:
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected '=' (after identifier)"
+            ))
+        res.register(self.increment())
+        
+        start_value = res.register(self.atom())
+        if res.error: return res
+        
+        if not (self.current_token.type == TT_KEYWORD and self.current_token.value == 'to'):
+            return res.failure(InvalidSyntaxError(
+                self.current_token.pos_start, self.current_token.pos_end,
+                "Expected 'to' keyword (after identifier's starting point in for statement)"
+            ))
+        res.register(self.increment())
+        
+        end_value = res.register(self.atom())
+        if res.error: return res
+        
+        if self.current_token.type == TT_KEYWORD and self.current_token.value == 'step':
+            res.register(self.increment())
+            step_value = res.register(self.atom())
+            if res.error: return res
+        else: step_value = None
+        
+        statements = res.register(self.code_block((
+            (TT_KEYWORD, 'end'),
+            ), for_keyword_token.pos_start, for_keyword_token.pos_end
+        ))
+        if res.error: return res
+        res.register(self.increment())
+        return res.success(ForNode(
+            for_keyword_token, var_name,
+            start_value, end_value, step_value,
+            statements
+        ))
+    
+    def while_expr(self):
+        res = ParseResult()
+        while_keyword_token = self.current_token
+        res.register(self.increment())
+        
+        condition = res.register(self.atom())
+        if res.error: return res
+        
+        statements = res.register(self.code_block((
+            (TT_KEYWORD, 'end'),
+            ), while_keyword_token.pos_start, while_keyword_token.pos_end
+        ))
+        if res.error: return res
+        res.register(self.increment())
+        return res.success(WhileNode(
+            while_keyword_token,
+            condition, statements
+        ))
+    
     def statement(self):
         res = ParseResult()
         if self.current_token.type == TT_KEYWORD and self.current_token.value == 'if':
             statement = res.register(self.if_expr())
         elif self.current_token.type == TT_KEYWORD and self.current_token.value == 'choice':
             statement = res.register(self.type_choice())
+        elif self.current_token.type == TT_KEYWORD and self.current_token.value == 'for':
+            statement = res.register(self.for_expr())
+        elif self.current_token.type == TT_KEYWORD and self.current_token.value == 'while':
+            statement = res.register(self.while_expr())
         else:
             statement = res.register(self.expr())
         if res.error: return res
@@ -689,7 +794,7 @@ class Parser:
     
     def code(self):
         res = ParseResult()
-        statements = res.register(self.code_block((TT_EOF,)))
+        statements = res.register(self.code_block((TT_EOF,),))
         if res.error: return res
 
         return res.success(CodeNode(statements))
@@ -737,7 +842,7 @@ class Parser:
                     "Expected '\\n' or ';'"
                 ))
             res.register(self.increment())
-            
+
             statements.append(res.register(self.statement()))
             if res.error: return res
         
@@ -996,13 +1101,8 @@ class NotNode:
     def __repr__(self):
         return f'!({self.node})'
 
-class CIfNode:
-    def __init__(self, if_value, elif_values=[], else_value=None):
-        self.if_value = if_value
-        self.elif_values = elif_values
-        self.else_value = else_value
-    
-    def commandize(self, cmds, statement_str):
+class CodeBlock:
+    def commandize(cmds, statement_str):
         result = statement_str
         for cmd in cmds:
             cmd = cmd.replace('\\*', '')
@@ -1021,7 +1121,7 @@ class CIfNode:
         result += ';\n'
         return result
     
-    def code_block(self, statements):
+    def code_block(statements):
         result = ''
         for statement in statements:
             statement_str = statement.__repr__()
@@ -1035,24 +1135,61 @@ class CIfNode:
                 tmp = statement_str[tmpi:statement_str.find('*\\', tmpi)+2]
                 statement_str = statement_str.replace(tmp, '')
                 cmd.append(tmp)
-            result += self.commandize(cmd, statement_str)
+            result += CodeBlock.commandize(cmd, statement_str)
         return result
-    
+
+class CIfNode:
+    def __init__(self, if_value, elif_values=[], else_value=None):
+        self.if_value = if_value
+        self.elif_values = elif_values
+        self.else_value = else_value
+
     def __repr__(self):
         result = f'if ({self.if_value[0]}){{\n'
-        result += self.code_block(self.if_value[1])
+        result += CodeBlock.code_block(self.if_value[1])
         result += '}'
         
         for elif_value in self.elif_values:
             result += f'else if ({elif_value[0]}){{\n'
-            result += self.code_block(elif_value[1])
+            result += CodeBlock.code_block(elif_value[1])
             result += '}'
         
         if self.else_value:
             result += 'else{\n'
-            result += self.code_block(self.else_value)
+            result += CodeBlock.code_block(self.else_value)
             result += '}'
         
+        return result
+
+class CForNode:
+    def __init__(self, identifier_name, var_type, start_value, end_value, step_value, statements):
+        self.identifier_name = identifier_name
+        self.var_type = var_type
+        self.start_value = start_value
+        self.end_value = end_value
+        self.step_value = step_value
+        self.statements = statements
+    
+    def __repr__(self):
+        result = 'for ('
+        result += f'{self.var_type} {self.identifier_name}_i = {self.start_value}; '
+        result += f'{self.identifier_name}_i < {self.end_value}; '
+        if self.step_value == 1: result += f'{self.identifier_name}_i++'
+        else: result += f'{self.identifier_name}_i+={self.step_value}'
+        result += '){\n'
+        result += CodeBlock.code_block(self.statements)
+        result += '}'
+        return result
+
+class CWhileNode:
+    def __init__(self, condition, statements):
+        self.condition = condition
+        self.statements = statements
+    
+    def __repr__(self):
+        result = f'while ({self.condition}){{\n'
+        result += CodeBlock.code_block(self.statements)
+        result += '}'
         return result
 
 class CStatementNode:
@@ -1444,6 +1581,42 @@ class Analizer:
         self.symbol_table.symbol_type_choice_end(node.identifier.value)
         self.symbol_table.end_branch()
         return res.success(CIfNode(if_expr))
+    
+    def visit_ForNode(self, node):
+        res = AnalizeResult()
+        identifier_name = node.var_name_token.value
+        
+        start_value = res.register(self.visit(node.start_value_node))
+        if res.error: return res
+        end_value = res.register(self.visit(node.end_value_node))
+        if res.error: return res
+        step_value = res.register(self.visit(node.step_value_node)) if node.step_value_node else 1
+        if res.error: return res
+        
+        statements = []
+        for statement in node.statements:
+            statements.append(res.register(self.visit(statement)))
+            if res.error: return res
+        
+        var_type = 'int' if start_value=='int' and end_value=='int' else 'float'        
+        return res.success(CForNode(
+            identifier_name, var_type,
+            start_value, end_value, step_value, statements
+        ))
+    
+    def visit_WhileNode(self, node):
+        res = AnalizeResult()
+        condition = res.register(self.visit(node.condition_node))
+        if res.error: return res
+        
+        statements = []
+        for statement in node.statements:
+            statements.append(res.register(self.visit(statement)))
+            if res.error: return res
+        
+        return res.success(CWhileNode(
+            condition, statements
+        ))
     
     def visit_BinOpNode(self, node):
         res = AnalizeResult()
