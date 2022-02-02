@@ -46,6 +46,10 @@ class Error:
         result += '\n\n' + super_string(self.pos_start.ftext, self.pos_start, self.pos_end)
         return result
 
+class CompileTimeWarnning(Error):
+    def __init__(self, pos_start, pos_end, details):
+        super().__init__(pos_start, pos_end, "CompileTimeWarnning", details)
+
 class IllegalCharError(Error):
     def __init__(self, pos_start, pos_end, details):
         super().__init__(pos_start, pos_end, "IllegalCharError", details)
@@ -893,20 +897,28 @@ class CStringNode:
         return f'"{self.value}"'
 
 class SymbolNode:
-    def __init__(self, symbols, name, branch):
-        self.symbols = symbols
-        self.name = name
-        self.branch = branch.copy()
-        self.type = self.symbols[self.name].type
-        self.symbols[self.name].usage_count += 1
-        self.symbol_usage = self.symbols[self.name].usage_count
-        self.type_choice = self.symbols[self.name].type_choice
-        if isinstance(self.type, list) and self.type_choice is not None:
-            self.type = self.type_choice
-        if self.type == 'str':
-            self.str_length = self.symbols[name].str_length
+    def __init__(self, symbols=None, name=None, branch=None, type_=None, for_var=False):
+        if for_var:
+            self.for_var = True
+            self.name = name
+            self.type = type_
+        else:
+            self.for_var = False
+            self.symbols = symbols
+            self.name = name
+            self.branch = branch.copy()
+            self.type = self.symbols[self.name].type
+            self.symbols[self.name].usage_count += 1
+            self.symbol_usage = self.symbols[self.name].usage_count
+            self.type_choice = self.symbols[self.name].type_choice
+            if isinstance(self.type, list) and self.type_choice is not None:
+                self.type = self.type_choice
+            if self.type == 'str':
+                self.str_length = self.symbols[name].str_length
     
     def __repr__(self):
+        if self.for_var:
+            return f'{self.name}_i'
         self.symbol = self.symbols[self.name]
         if isinstance(self.symbol, Variable): return f'{self.symbol.name}_'
         if isinstance(self.type, list) or self.type=='str':
@@ -1309,15 +1321,21 @@ class Variable(Symbol):
 class SymbolTable:
     BRANCH_IF = 0
     BRANCH_ELSE = 1
+    BRANCH_WHILE = 2
+    BRANCH_FOR = 3
     def __init__(self):
         self.branchs = []
         self.branch_count = 0
         self.symbols = {}
         self.identifier_count = 0
         self.global_variables = []
+        self.for_refrence = None
     
     def symbol_get(self, name, node):
         res = AnalizeResult()
+        if self.for_refrence is not None:
+            if name in self.for_refrence:
+                return res.success(SymbolNode(for_var=True, name=name, type_=self.for_refrence[1]))
         if name in self.symbols.keys():
             return res.success(SymbolNode(self.symbols, name, self.branchs))
         return res.failure(
@@ -1352,7 +1370,7 @@ class SymbolTable:
                 self.identifier_count += 1
                 libraries.add('#include<stdlib.h>\n')
             if self.branchs:
-                if self.branchs[-1] == SymbolTable.BRANCH_IF:
+                if self.branchs[-1] in (SymbolTable.BRANCH_IF, SymbolTable.BRANCH_FOR, SymbolTable.BRANCH_WHILE) :
                     if value_node.type != symbol.type:
                         if isinstance(symbol.type, list):
                             if value_node.type not in symbol.type:
@@ -1364,7 +1382,7 @@ class SymbolTable:
                     else:
                         symbol.is_branching = True
                         symbol.if_thingy = symbol.type
-                else:
+                elif self.branchs[-1] == SymbolTable.BRANCH_ELSE:
                     if isinstance(symbol.type, list):
                         if value_node.type != symbol.if_thingy:
                             if value_node.type not in symbol.type:
@@ -1379,6 +1397,15 @@ class SymbolTable:
             return res.success(SymbolAssignNode(self.symbols, name, value_node, type_change=True))
         
         if self.branchs:
+            if self.branchs[-1] == SymbolTable.BRANCH_WHILE or self.branchs[-1] == SymbolTable.BRANCH_FOR:
+                return res.failure(NameError_(
+                    node.pos_start, node.pos_end,
+                    f"Name '{name}' is not defined, hint: can't initiate identifiers inside a loop"
+                ))
+            print(CompileTimeWarnning(
+                node.pos_start, node.pos_end,
+                f"Should not initiate identifiers inside a branch, could cause None type identifiers"
+            ).as_string())
             symbol = Identifier(name, None, self.identifier_count)
             self.symbols[name] = symbol
             self.identifier_count += 1
@@ -1442,7 +1469,15 @@ class SymbolTable:
     def start_else_branch(self):
         self.branchs.append(SymbolTable.BRANCH_ELSE)
     
+    def start_while_branch(self):
+        self.branchs.append(SymbolTable.BRANCH_WHILE)
+    
+    def start_for_branch(self, identifier_name, type_):
+        self.for_refrence = identifier_name, type_
+        self.branchs.append(SymbolTable.BRANCH_FOR)
+    
     def end_branch(self):
+        self.for_refrence = None
         self.branchs.pop()
 
 ### Analizer ###
@@ -1592,13 +1627,13 @@ class Analizer:
         if res.error: return res
         step_value = res.register(self.visit(node.step_value_node)) if node.step_value_node else 1
         if res.error: return res
-        
+        var_type = 'int' if start_value=='int' and end_value=='int' else 'float'
+        self.symbol_table.start_for_branch(identifier_name, var_type)
         statements = []
         for statement in node.statements:
             statements.append(res.register(self.visit(statement)))
             if res.error: return res
-        
-        var_type = 'int' if start_value=='int' and end_value=='int' else 'float'        
+        self.symbol_table.end_branch()
         return res.success(CForNode(
             identifier_name, var_type,
             start_value, end_value, step_value, statements
@@ -1609,11 +1644,12 @@ class Analizer:
         condition = res.register(self.visit(node.condition_node))
         if res.error: return res
         
+        self.symbol_table.start_while_branch()
         statements = []
         for statement in node.statements:
             statements.append(res.register(self.visit(statement)))
             if res.error: return res
-        
+        self.symbol_table.end_branch()
         return res.success(CWhileNode(
             condition, statements
         ))
