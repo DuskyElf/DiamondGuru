@@ -1,8 +1,9 @@
-# DiamondGuru
+# DiamondGuru (depricated)
 The DiamondGuru Programming Language. (Conceptual)
 
-### DiamondGuru's compiler is written in python, which compiles DiamondGuru source code to C
-### Then use gcc to compile compiled C source to binary
+## This was a personal project to understand how compilers work
+- DiamondGuru's compiler is written in python, which compiles DiamondGuru source code to C
+- Then use gcc to compile compiled C source to binary
 
 ### How to run -
 ```command
