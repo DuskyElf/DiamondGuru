@@ -1,4 +1,4 @@
-# DiamondGuru (depricated)
+# DiamondGuru (deprecate)
 The DiamondGuru Programming Language. (Conceptual)
 
 ## This was a personal project to understand how compilers work
